@@ -1,0 +1,113 @@
+{
+  "name": "skarp-vscode",
+  "displayName": "skarp",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "skarp",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.140.0"
+  },
+  "main": "./out/extension.cjs",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "skarp-area-container",
+          "title": "skarp",
+          "icon": "media/skarp.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "skarp-chat-container",
+          "title": "Skarp Chat",
+          "icon": "media/skarp.svg"
+        }
+      ]
+    },
+    "views": {
+      "skarp-area-container": [
+        {
+          "type": "webview",
+          "id": "skarp.area",
+          "name": "skarp"
+        }
+      ],
+      "skarp-chat-container": [
+        {
+          "type": "webview",
+          "id": "skarp.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "skarp",
+      "properties": {
+        "skarp.model": {
+          "type": "string",
+          "enum": [
+            "copilot",
+            "gemini",
+            "fake"
+          ],
+          "enumDescriptions": [
+            "GitHub Copilot through VS Code (no key; no token counts)",
+            "Google Gemini with your own API key (reports token counts)",
+            "Echo model for testing, no network"
+          ],
+          "default": "copilot",
+          "description": "Which model skarp uses."
+        },
+        "skarp.copilotModel": {
+          "type": "string",
+          "default": "",
+          "description": "Copilot model id from the chat's model picker; empty uses the first one Copilot offers."
+        },
+        "skarp.geminiModel": {
+          "type": "string",
+          "default": "gemini-3.6-flash",
+          "description": "Gemini model id, used when skarp.model is gemini."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "skarp.setGeminiKey",
+        "title": "skarp: Set Gemini API key"
+      }
+    ]
+  },
+  "dependencies": {
+    "@ai-sdk/google": "4.0.91",
+    "@skarp/core": "workspace:*",
+    "@skarp/schema": "workspace:*",
+    "@skarp/ui": "workspace:*",
+    "ai": "7.0.132",
+    "ajv": "^8.20.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "scripts": {
+    "build": "pnpm build:ext && pnpm build:webview",
+    "build:ext": "mkdir -p media && cp ../../assets/skarp-mono.svg media/skarp.svg && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=out/extension.cjs --sourcemap",
+    "build:webview": "vite build --config webview/vite.config.mts",
+    "dev:webview": "vite --config webview/vite.config.mts",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "package": "pnpm build && vsce package --no-dependencies --skip-license --allow-missing-repository -o skarp.vsix"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/vscode": "^1.140.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.4"
+  }
+}

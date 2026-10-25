@@ -1,0 +1,19 @@
+{
+  "name": "@skarp/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@skarp/kernel": "workspace:*",
+    "@skarp/schema": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test \"src/**/*.test.ts\""
+  }
+}

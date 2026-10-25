@@ -1,0 +1,17 @@
+{
+  "editor.defaultFormatter": "biomejs.biome",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.biome": "explicit"
+  },
+  "nodejs-testing.extensions": [
+    {
+      "extensions": ["mjs", "cjs", "js"],
+      "parameters": []
+    },
+    {
+      "extensions": ["ts", "mts"],
+      "parameters": []
+    }
+  ],
+  "nodejs-testing.exclude": ["**/node_modules/**", "**/dist/**", "spikes/**"]
+}

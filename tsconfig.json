@@ -1,0 +1,23 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/schema"
+    },
+    {
+      "path": "packages/kernel"
+    },
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/rpc"
+    },
+    {
+      "path": "packages/conformance"
+    },
+    {
+      "path": "packages/hooks"
+    }
+  ]
+}

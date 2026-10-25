@@ -1,0 +1,12 @@
+{
+  "name": "skarp-tools",
+  "description": "skarp: own what you ship",
+  "owner": { "name": "sureandhar" },
+  "plugins": [
+    {
+      "name": "skarp",
+      "source": "./plugin/skarp",
+      "description": "Plan first, capped slices, graded plans, checked explanations and diagrams."
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+out/
+*.vsix
+*.tsbuildinfo
+.DS_Store
+.env*
+storybook-static/
+
+# scratch work, not part of the product
+/spikes/
+media/
+docs/
+docs/plan/*
+docs/research/
+docs/requirement/
+docs/design/concepts/
+docs/design/assets/
+docs/design/ui-ux*
+docs/design/architecture*
+.claude/settings.local.json
+
+# graphify knowledge graph (regenerate with: graphify update .)
+graphify-out/

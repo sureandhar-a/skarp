@@ -1,0 +1,540 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SkarpMessages",
+  "description": "Source of truth for the skarp core API (A12) and ledger events (D68). TS types are generated from this file: pnpm gen.",
+  "definitions": {
+    "LedgerEvent": {
+      "$comment": "==================== MODEL DEFINITION (NO MAPPING) ====================",
+      "description": "An event that is recorded in the ledger. This is the source of truth for all events that happen in the system.",
+      "type": "object",
+      "required": [
+        "kind",
+        "id",
+        "time",
+        "type",
+        "schema_version",
+        "provenance",
+        "refs",
+        "why_kept",
+        "payload"
+      ],
+      "if": {
+        "not": { "properties": { "type": { "enum": ["error_rejected", "stop_everywhere"] } } }
+      },
+      "then": { "required": ["session_id"] },
+      "properties": {
+        "kind": { "const": "ledger_event" },
+        "id": { "type": "string" },
+        "time": { "type": "string" },
+        "type": {
+          "description": "what happened; one provenance and one why_kept per type (core/src/ledger.ts)",
+          "enum": [
+            "user_message",
+            "ask",
+            "answer",
+            "answer_skipped",
+            "answer_not_yet",
+            "silence",
+            "assistant_reply",
+            "model_call",
+            "tool_call",
+            "referee",
+            "outcome",
+            "run",
+            "skarp",
+            "edit",
+            "mode",
+            "stop_everywhere",
+            "stop",
+            "piece_left",
+            "dismiss",
+            "error_rejected",
+            "error_model",
+            "model_switch",
+            "ask_event",
+            "segment"
+          ]
+        },
+        "schema_version": { "type": "integer" },
+        "session_id": {
+          "description": "required on every type except error_rejected, which can happen before any session is found (unknown kind, no pending ask); never invent one",
+          "type": "string"
+        },
+        "provenance": {
+          "description": "who vouches for it: observed (skarp saw it), reported (the model or host told skarp), typed (you wrote it), clicked (you pressed a button; a choice, not evidence of understanding)",
+          "enum": ["observed", "reported", "typed", "clicked"]
+        },
+        "refs": {
+          "description": "references to files, lines, commits or ids; for an error_rejected answer with no pending ask, the answer's ask_id",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "why_kept": { "description": "why this event was kept", "type": "string" },
+        "payload": {
+          "description": "the original message this event records (UserMessage, Ask, Answer, AssistantReply, ErrorMessage), or for model_call: { model, usage? }",
+          "type": "object"
+        }
+      }
+    },
+    "UserMessage": {
+      "$comment": "==================== INBOUND MESSAGES (UI -> Core) ====================",
+      "description": "Sent when the user types a prompt into the panel.",
+      "type": "object",
+      "required": ["kind", "session_id", "text"],
+      "properties": {
+        "kind": { "const": "user_message" },
+        "session_id": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "Finish": {
+      "description": "Sent when the user clicks Finish (U67): the chat closes with Return (D33).",
+      "type": "object",
+      "required": ["kind", "session_id"],
+      "properties": { "kind": { "const": "finish" }, "session_id": { "type": "string" } }
+    },
+    "RunDecision": {
+      "description": "Sent when the user approves or declines a project command (D92). Declined = \"Not now\", owed as not run (U31).",
+      "type": "object",
+      "required": ["kind", "run_id", "nonce", "approve"],
+      "properties": {
+        "kind": { "const": "run_decision" },
+        "run_id": { "type": "string" },
+        "nonce": { "type": "string" },
+        "approve": { "type": "boolean" }
+      }
+    },
+    "EditDecision": {
+      "description": "Accept, Reject or Undo accept on held edits (U23, U25, U62). A right of the user, never inferred by a model (D97).",
+      "type": "object",
+      "required": ["kind", "session_id", "action"],
+      "properties": {
+        "kind": { "const": "edit_decision" },
+        "session_id": { "type": "string" },
+        "action": { "enum": ["accept", "reject", "undo_accept"] },
+        "path": { "description": "one file; none = all held files", "type": "string" }
+      }
+    },
+    "SetMode": {
+      "description": "The mode picker (U69): quick, \"I have time\" (one deep block allowed, D52) or skarp off for this chat (D40). Logged, for the stop rate (D108).",
+      "type": "object",
+      "required": ["kind", "session_id", "mode"],
+      "properties": {
+        "kind": { "const": "set_mode" },
+        "session_id": { "type": "string" },
+        "mode": { "enum": ["quick", "time", "off"] }
+      }
+    },
+    "Stop": {
+      "description": "Stop (U71): Send turns into Stop while the AI works; it stops everything in flight for this chat (model call, tool steps, a running command).",
+      "type": "object",
+      "required": ["kind", "session_id"],
+      "properties": { "kind": { "const": "stop" }, "session_id": { "type": "string" } }
+    },
+    "StopEverywhere": {
+      "description": "Stop skarp everywhere, or turn it back on (U70, D40). Logged; asks stop in every chat, the area stays usable (U33).",
+      "type": "object",
+      "required": ["kind", "stopped"],
+      "properties": { "kind": { "const": "stop_everywhere" }, "stopped": { "type": "boolean" } }
+    },
+    "Dismiss": {
+      "description": "Removes a Shelf item (U43). The ledger keeps what happened; the item stops showing.",
+      "type": "object",
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": { "const": "dismiss" },
+        "ref": { "description": "the shelf item's id (a ledger event id)", "type": "string" }
+      }
+    },
+    "GetData": {
+      "description": "Counts for Settings > Your data (U86).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "get_data" } }
+    },
+    "ExportData": {
+      "description": "Export all (D41, D69): every ledger line and every saved chat, as one JSON bundle.",
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "export_data" } }
+    },
+    "ImportData": {
+      "description": "Import a bundle made by Export all, e.g. from another machine (D69). Untrusted: every line is checked.",
+      "type": "object",
+      "required": ["kind", "bundle"],
+      "properties": { "kind": { "const": "import_data" }, "bundle": { "type": "string" } }
+    },
+    "DeleteAll": {
+      "description": "Delete all (D41): the ledger and every saved chat. Never refused; the cost is shown first (U43).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "delete_all" } }
+    },
+    "GetArea": {
+      "description": "Asks for what the skarp area shows.",
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "get_area" } }
+    },
+    "ListSessions": {
+      "description": "Asks for the sessions list (U55).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "list_sessions" } }
+    },
+    "OpenSession": {
+      "description": "Opens a saved chat; Core answers with its transcript.",
+      "type": "object",
+      "required": ["kind", "session_id"],
+      "properties": { "kind": { "const": "open_session" }, "session_id": { "type": "string" } }
+    },
+    "DeleteSession": {
+      "description": "Deletes a chat's transcript, held edits and snapshots (D99). The ledger keeps its events.",
+      "type": "object",
+      "required": ["kind", "session_id"],
+      "properties": { "kind": { "const": "delete_session" }, "session_id": { "type": "string" } }
+    },
+    "Answer": {
+      "description": "Sent when the user answers an Ask (or skips it).",
+      "type": "object",
+      "required": ["kind", "ask_id", "nonce", "response", "value"],
+      "properties": {
+        "kind": { "const": "answer" },
+        "ask_id": { "type": "string" },
+        "nonce": {
+          "description": "a one-time random value; an answer must carry the ask's nonce, so old or forged answers are refused",
+          "type": "string"
+        },
+        "response": {
+          "description": "How the user responded: typed an answer, or clicked Skip / Not yet. Set by the button, so typing the word \"skip\" stays a typed answer.",
+          "enum": ["answered", "skipped", "not_yet"]
+        },
+        "value": {
+          "description": "The user's typed text when response is \"answered\"; empty otherwise.",
+          "type": "string"
+        },
+        "sure": {
+          "description": "How sure are you (X2), on asks that offer it; absent when not picked",
+          "enum": ["sure", "maybe", "guess"]
+        },
+        "evidence": {
+          "description": "Point at the evidence (X3): the file:line the answer rests on",
+          "type": "string"
+        }
+      }
+    },
+    "Ask": {
+      "$comment": "==================== OUTBOUND MESSAGES (Core -> UI) ====================",
+      "description": "Sent by Core when a question must be answered before proceeding.",
+      "type": "object",
+      "required": [
+        "kind",
+        "ask_id",
+        "nonce",
+        "intent",
+        "block_id",
+        "reason",
+        "question_text",
+        "answer_type"
+      ],
+      "properties": {
+        "kind": { "const": "ask" },
+        "ask_id": { "type": "string" },
+        "nonce": {
+          "description": "a one-time random value; an ask must carry a nonce, so old or forged asks are refused",
+          "type": "string"
+        },
+        "intent": { "type": "string" },
+        "block_id": {
+          "description": "the catalogue block code picked, e.g. LS-B1",
+          "type": "string"
+        },
+        "reason": {
+          "description": "why skarp asks this now, always shown (D98)",
+          "type": "string"
+        },
+        "question_text": { "type": "string" },
+        "answer_type": {
+          "description": "order: put the choices in the right order",
+          "enum": ["text", "choice", "order"]
+        },
+        "choices": {
+          "description": "the options to tap; only when answer_type is choice",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "how_sure": {
+          "description": "show How sure? (X2, U13): only on blocks whose spec asks for it",
+          "type": "boolean"
+        },
+        "evidence": {
+          "description": "lines skarp observed, to point at as evidence (X3, U14)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "line"],
+            "properties": { "file": { "type": "string" }, "line": { "type": "number" } }
+          }
+        }
+      }
+    },
+    "HeldEdits": {
+      "description": "Sent by Core whenever the held edits change: files waiting for Accept, and the last accepted batch, which Undo accept restores.",
+      "type": "object",
+      "required": ["kind", "files", "accepted"],
+      "properties": {
+        "kind": { "const": "held_edits" },
+        "files": { "type": "array", "items": { "$ref": "#/definitions/ChangedFile" } },
+        "accepted": { "type": "array", "items": { "$ref": "#/definitions/ChangedFile" } }
+      }
+    },
+    "ChangedFile": {
+      "type": "object",
+      "required": ["path", "add", "del"],
+      "properties": {
+        "path": { "type": "string" },
+        "add": { "type": "integer" },
+        "del": { "type": "integer" },
+        "content": {
+          "description": "the proposed text, for the diff tab; the extension strips it before the webview",
+          "type": "string"
+        }
+      }
+    },
+    "Area": {
+      "description": "What the skarp area shows (U79).",
+      "type": "object",
+      "required": ["kind", "stopped", "shelf", "knowledge"],
+      "properties": {
+        "kind": { "const": "area" },
+        "stopped": { "description": "stopped everywhere", "type": "boolean" },
+        "shelf": {
+          "description": "what you owe (U80); only kinds skarp can observe today",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "title", "meta", "session_id"],
+            "properties": {
+              "id": { "type": "string" },
+              "kind": { "enum": ["not-yet", "not-run"] },
+              "title": { "type": "string" },
+              "meta": { "type": "string" },
+              "session_id": { "type": "string" }
+            }
+          }
+        },
+        "knowledge": {
+          "description": "one row per folder concept, recently touched first (U83)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["concept", "stage", "touched"],
+            "properties": {
+              "concept": { "type": "string" },
+              "stage": {
+                "description": "1 full question, 2 quick check, 3 quiet",
+                "enum": [1, 2, 3]
+              },
+              "depth": { "enum": ["explained", "applied", "taught"] },
+              "touched": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "Data": {
+      "description": "What skarp keeps about you, counted (U86). `bundle` only in reply to export_data.",
+      "type": "object",
+      "required": ["kind", "events", "chats"],
+      "properties": {
+        "kind": { "const": "data" },
+        "events": { "type": "integer" },
+        "chats": { "type": "integer" },
+        "bundle": { "type": "string" }
+      }
+    },
+    "Sessions": {
+      "description": "The saved chats, newest first (U55).",
+      "type": "object",
+      "required": ["kind", "items"],
+      "properties": {
+        "kind": { "const": "sessions" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "updated", "status", "files"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "updated": { "type": "string" },
+              "status": { "enum": ["question", "done"] },
+              "files": { "description": "held edits waiting for Accept", "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "SessionView": {
+      "description": "A saved chat's transcript: every message in and out, in order, for the UI to replay.",
+      "type": "object",
+      "required": ["kind", "session_id", "title", "mode", "items"],
+      "properties": {
+        "kind": { "const": "session_view" },
+        "session_id": { "type": "string" },
+        "title": { "type": "string" },
+        "mode": { "enum": ["quick", "time", "off"] },
+        "items": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/definitions/UserMessage" },
+              { "$ref": "#/definitions/Answer" },
+              { "$ref": "#/definitions/Ask" },
+              { "$ref": "#/definitions/AssistantReply" },
+              { "$ref": "#/definitions/RunApproval" },
+              { "$ref": "#/definitions/RunDecision" },
+              { "$ref": "#/definitions/RunResult" },
+              { "$ref": "#/definitions/Stop" },
+              { "$ref": "#/definitions/ErrorMessage" },
+              { "$ref": "#/definitions/Notice" }
+            ]
+          }
+        }
+      }
+    },
+    "ChatState": {
+      "description": "How this chat runs, for the chat header: a control chat (D95) shows a quiet strip, so its silence doesn't look broken.",
+      "type": "object",
+      "required": ["kind", "session_id", "control"],
+      "properties": {
+        "kind": { "const": "chat_state" },
+        "session_id": { "type": "string" },
+        "control": { "type": "boolean" }
+      }
+    },
+    "RunApproval": {
+      "description": "Sent by Core when the AI wants to run a project command; nothing runs without the user's OK (D92).",
+      "type": "object",
+      "required": ["kind", "run_id", "nonce", "command"],
+      "properties": {
+        "kind": { "const": "run_approval" },
+        "run_id": { "type": "string" },
+        "nonce": { "type": "string" },
+        "command": { "type": "string" }
+      }
+    },
+    "RunResult": {
+      "description": "Sent by Core after an approved command ran (A15).",
+      "type": "object",
+      "required": ["kind", "command", "exit_code", "output"],
+      "properties": {
+        "kind": { "const": "run_result" },
+        "command": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "output": { "type": "string" }
+      }
+    },
+    "AssistantReply": {
+      "description": "Sent by Core when the assistant has a reply to the user.",
+      "type": "object",
+      "required": ["kind", "text"],
+      "properties": {
+        "kind": { "const": "assistant_reply" },
+        "text": { "type": "string" },
+        "least_sure": {
+          "description": "what the AI is least sure of, from its report (R20, A18)",
+          "type": "string"
+        },
+        "failed_checks": {
+          "description": "Referee checks the reply still failed after the retry; shown with it",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "ErrorMessage": {
+      "description": "Sent by Core when an error occurs.",
+      "type": "object",
+      "required": ["kind", "message"],
+      "properties": { "kind": { "const": "error" }, "message": { "type": "string" } }
+    },
+    "AskEvent": {
+      "description": "Small signals on an ask, logged (N1): Undo within 3 s of a tap (U15), a reason after Skip (U19), \"lighter\" on the Why line (§15).",
+      "type": "object",
+      "required": ["kind", "session_id", "ask_id", "event"],
+      "properties": {
+        "kind": { "const": "ask_event" },
+        "session_id": { "type": "string" },
+        "ask_id": { "type": "string" },
+        "event": { "enum": ["undo", "skip_reason", "lighter"] },
+        "value": { "type": "string" }
+      }
+    },
+    "Recall": {
+      "description": "The header's Recall button (U8, D80): start a recall yourself.",
+      "type": "object",
+      "required": ["kind", "session_id"],
+      "properties": { "kind": { "const": "recall" }, "session_id": { "type": "string" } }
+    },
+    "Notice": {
+      "description": "A light line from skarp in the chat: the model really used (G34), how an answer was graded (D126), the chat finished, a new part of the chat (D49), a challenge note.",
+      "type": "object",
+      "required": ["kind", "about", "text"],
+      "properties": {
+        "kind": { "const": "notice" },
+        "about": { "enum": ["model", "verdict", "finish", "segment"] },
+        "text": { "type": "string" },
+        "pass": { "description": "for a verdict: whether the answer matched", "type": "boolean" }
+      }
+    },
+    "InMessage": {
+      "$comment": "==================== DISPATCH UNIONS ====================",
+      "description": "Union of all messages that can be sent into Core.handle()",
+      "oneOf": [
+        { "$ref": "#/definitions/UserMessage" },
+        { "$ref": "#/definitions/Answer" },
+        { "$ref": "#/definitions/Finish" },
+        { "$ref": "#/definitions/RunDecision" },
+        { "$ref": "#/definitions/EditDecision" },
+        { "$ref": "#/definitions/SetMode" },
+        { "$ref": "#/definitions/StopEverywhere" },
+        { "$ref": "#/definitions/Stop" },
+        { "$ref": "#/definitions/GetArea" },
+        { "$ref": "#/definitions/Dismiss" },
+        { "$ref": "#/definitions/GetData" },
+        { "$ref": "#/definitions/ExportData" },
+        { "$ref": "#/definitions/ImportData" },
+        { "$ref": "#/definitions/DeleteAll" },
+        { "$ref": "#/definitions/ListSessions" },
+        { "$ref": "#/definitions/OpenSession" },
+        { "$ref": "#/definitions/DeleteSession" },
+        { "$ref": "#/definitions/AskEvent" },
+        { "$ref": "#/definitions/Recall" }
+      ]
+    },
+    "OutMessage": {
+      "description": "Union of all messages Core.handle() can return",
+      "oneOf": [
+        { "$ref": "#/definitions/Ask" },
+        { "$ref": "#/definitions/AssistantReply" },
+        { "$ref": "#/definitions/RunApproval" },
+        { "$ref": "#/definitions/RunResult" },
+        { "$ref": "#/definitions/HeldEdits" },
+        { "$ref": "#/definitions/Sessions" },
+        { "$ref": "#/definitions/Area" },
+        { "$ref": "#/definitions/Data" },
+        { "$ref": "#/definitions/SessionView" },
+        { "$ref": "#/definitions/ChatState" },
+        { "$ref": "#/definitions/ErrorMessage" },
+        { "$ref": "#/definitions/Notice" }
+      ]
+    }
+  },
+  "type": "object",
+  "properties": {
+    "in": { "$ref": "#/definitions/InMessage" },
+    "out": { "$ref": "#/definitions/OutMessage" },
+    "event": { "$ref": "#/definitions/LedgerEvent" }
+  }
+}

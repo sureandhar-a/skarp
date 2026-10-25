@@ -1,0 +1,156 @@
+/* UI kit tokens.
+   --skarp-* are the single source. In VS Code each maps to a --vscode-* variable WITH a fallback,
+   because some forks don't pass theme variables to webviews. Standalone/Storybook force a theme
+   with [data-theme="dark|light|hc"] on any ancestor. Tailwind may only use these (A2). */
+@import "@fontsource/atkinson-hyperlegible-next/400.css";
+@import "@fontsource/atkinson-hyperlegible-next/500.css";
+@import "@fontsource/atkinson-hyperlegible-next/700.css";
+@import "@fontsource/atkinson-hyperlegible-mono/400.css";
+@import "@vscode/codicons/dist/codicon.css";
+
+@source "./";
+
+:root {
+  --skarp-text: var(--vscode-foreground, #cccccc);
+  --skarp-text-muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --skarp-surface: var(--vscode-sideBar-background, #181818);
+  --skarp-surface-raised: var(--vscode-editorWidget-background, #222222);
+  --skarp-border: var(--vscode-panel-border, #2f2f2f);
+  --skarp-accent: var(--vscode-focusBorder, #4daafc);
+  --skarp-danger: var(--vscode-errorForeground, #f85149);
+  --skarp-warning: var(--vscode-editorWarning-foreground, #cca700);
+  /* match = light accent tint, mismatch = light warning tint, never green/red */
+  --skarp-match: color-mix(in srgb, var(--skarp-accent) 13%, transparent);
+  --skarp-mismatch: color-mix(in srgb, var(--skarp-warning) 16%, transparent);
+  --skarp-match-edge: transparent;
+  --skarp-mismatch-edge: transparent;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --skarp-text: var(--vscode-foreground, #3b3b3b);
+    --skarp-text-muted: var(--vscode-descriptionForeground, #6e6e6e);
+    --skarp-surface: var(--vscode-sideBar-background, #f8f8f8);
+    --skarp-surface-raised: var(--vscode-editorWidget-background, #ffffff);
+    --skarp-border: var(--vscode-panel-border, #e0e0e0);
+    --skarp-accent: var(--vscode-focusBorder, #005fb8);
+    --skarp-danger: var(--vscode-errorForeground, #c72e0f);
+    --skarp-warning: var(--vscode-editorWarning-foreground, #8a6100);
+  }
+}
+
+[data-theme="dark"] {
+  --skarp-text: #cccccc;
+  --skarp-text-muted: #9d9d9d;
+  --skarp-surface: #181818;
+  --skarp-surface-raised: #222222;
+  --skarp-border: #2f2f2f;
+  --skarp-accent: #4daafc;
+  --skarp-danger: #f85149;
+  --skarp-warning: #cca700;
+}
+[data-theme="light"] {
+  --skarp-text: #3b3b3b;
+  --skarp-text-muted: #6e6e6e;
+  --skarp-surface: #f8f8f8;
+  --skarp-surface-raised: #ffffff;
+  --skarp-border: #e0e0e0;
+  --skarp-accent: #005fb8;
+  --skarp-danger: #c72e0f;
+  --skarp-warning: #8a6100;
+}
+/* in high contrast every tint becomes a clear outline */
+[data-theme="hc"] {
+  --skarp-text: #ffffff;
+  --skarp-text-muted: #ffffff;
+  --skarp-surface: #000000;
+  --skarp-surface-raised: #000000;
+  --skarp-border: #6fc3df;
+  --skarp-accent: #f38518;
+  --skarp-danger: #f48771;
+  --skarp-warning: #ffd700;
+}
+[data-theme="hc"],
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --skarp-match: transparent;
+  --skarp-mismatch: transparent;
+  --skarp-match-edge: var(--skarp-accent);
+  --skarp-mismatch-edge: var(--skarp-warning);
+}
+
+/* inline: utilities emit var(--skarp-*) directly, so a theme set on any ancestor wins */
+@theme inline {
+  --color-*: initial; /* no raw Tailwind colours */
+  --color-text: var(--skarp-text);
+  --color-text-muted: var(--skarp-text-muted);
+  --color-surface: var(--skarp-surface);
+  --color-surface-raised: var(--skarp-surface-raised);
+  --color-border: var(--skarp-border);
+  --color-accent: var(--skarp-accent);
+  --color-danger: var(--skarp-danger);
+  --color-warning: var(--skarp-warning);
+  --color-match: var(--skarp-match);
+  --color-mismatch: var(--skarp-mismatch);
+  --color-match-edge: var(--skarp-match-edge);
+  --color-mismatch-edge: var(--skarp-mismatch-edge);
+
+  --spacing: 4px; /* scale: 4 8 12 16 24 */
+  --radius-*: initial;
+  --radius-control: 4px;
+  --radius-card: 8px;
+  --radius-pill: 999px;
+
+  /* three text steps, relative to the host size set on <html> */
+  --text-*: initial;
+  --text-small: 0.85rem;
+  --text-small--line-height: 1.5;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5;
+  --text-question: 1.15rem;
+  --text-question--line-height: 1.4;
+
+  --font-ui: "Atkinson Hyperlegible Next", var(--vscode-font-family, system-ui), sans-serif;
+  --font-code: var(--vscode-editor-font-family, "Atkinson Hyperlegible Mono"), monospace;
+  --duration-skarp: 150ms;
+}
+
+@layer base {
+  html {
+    font-size: var(--vscode-font-size, 13px);
+  }
+  body {
+    margin: 0;
+    background: var(--skarp-surface);
+    color: var(--skarp-text);
+    font-family: var(--font-ui);
+    line-height: 1.5;
+  }
+  /* code in the editor font, scaled 0.85x */
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-code);
+    font-size: 0.85em;
+  }
+  /* visible focus */
+  :focus-visible {
+    outline: 2px solid var(--skarp-accent);
+    outline-offset: 1px;
+  }
+  .codicon {
+    font-size: 14px;
+    vertical-align: -2px;
+  } /* inline icons 14px */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      /* biome-ignore lint/complexity/noImportantStyles: reduce-motion must win */
+      transition-duration: 0s !important;
+      /* biome-ignore lint/complexity/noImportantStyles: reduce-motion must win */
+      animation-duration: 0s !important;
+    }
+  }
+}

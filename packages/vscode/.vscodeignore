@@ -1,0 +1,8 @@
+# Only the built extension ships: out/ (esbuild bundle + webview) and media/.
+src/**
+webview/**
+node_modules/**
+tsconfig.json
+**/*.map
+*.vsix
+out/extension.js

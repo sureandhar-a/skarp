@@ -1,0 +1,16 @@
+{
+  "name": "@skarp/conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@skarp/core": "workspace:*",
+    "@skarp/schema": "workspace:*"
+  },
+  "scripts": {
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
+  }
+}

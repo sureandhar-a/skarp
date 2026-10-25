@@ -1,0 +1,7 @@
+{
+  "name": "skarp",
+  "version": "0.1.0-preview",
+  "description": "Own what you ship: skarp asks for your plan before the AI codes, caps each slice, grades your plan against what really changed, and makes every change end with a checked explanation and diagram.",
+  "author": { "name": "sureandhar" },
+  "license": "MIT"
+}

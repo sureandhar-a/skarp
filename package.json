@@ -1,0 +1,20 @@
+{
+  "name": "skarp",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -b && pnpm -r --workspace-concurrency=1 test",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "gen": "pnpm --filter @skarp/schema gen"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

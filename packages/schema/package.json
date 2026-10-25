@@ -1,0 +1,20 @@
+{
+  "name": "@skarp/schema",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./messages.schema.json": "./messages.schema.json"
+  },
+  "scripts": {
+    "gen": "json2ts -i messages.schema.json -o src/types.gen.ts --no-additionalProperties",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^16.0.0"
+  }
+}
