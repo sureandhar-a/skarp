@@ -929,9 +929,10 @@ function grade(s, sid, log) {
 }
 function writtenFiles(input) {
   const tool = input.tool_name ?? "";
-  if (!WRITES.has(tool) && !/create|edit|replace|insert|patch|write/i.test(tool)) return [];
   const ti = input.tool_input ?? {};
   const rel = (p) => (isAbsolute(p) ? relative(input.cwd ?? "", p) : p) || "?";
+  if (RUNS.test(tool)) return shellWrites(String(ti.command ?? ""), rel);
+  if (!WRITES.has(tool) && !/create|edit|replace|insert|patch|write/i.test(tool)) return [];
   if (typeof ti.input === "string" && /^\*\*\* (Add|Update|Delete) File: /m.test(ti.input)) {
     const patch = ti.input;
     const paths = [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)];
@@ -964,6 +965,15 @@ ${text}`;
     ...(ti.edits ?? []).map((e) => e.new_string)
   ].filter(Boolean).join("\n");
   return [{ path: rel(path), content }];
+}
+function shellWrites(cmd, rel) {
+  const bare = cmd.replace(/<<-?\s*['"]?(\w+)['"]?([^\n]*)\n[\s\S]*?\n\s*\1[ \t]*(?=\n|$)/g, "$2").replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''");
+  const targets = [
+    ...bare.matchAll(/(?<![\d&<>])>>?\s*([^\s;&|<>()]+)/g),
+    ...bare.matchAll(/\btee\s+(?:-a\s+)?([^\s;&|<>()]+)/g)
+  ].map((m) => m[1] ?? "");
+  const paths = targets.filter((p) => p && !p.startsWith("/dev/")).map((p) => rel(p).replace(/^\.\//, "")).filter((p) => !p.startsWith(".."));
+  return [...new Set(paths)].map((path) => ({ path, content: cmd }));
 }
 function normalize(raw, event) {
   let args = raw.tool_input ?? raw.toolArgs;

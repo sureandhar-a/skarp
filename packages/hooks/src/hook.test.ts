@@ -134,6 +134,42 @@ test("Stop grades the answer against the touched files, never saying correct", (
   assert.doesNotMatch(out.systemMessage, /correct/i);
 });
 
+test("shell writes (>, >>, tee) are counted; quotes, heredoc bodies, fd redirects and outside paths are not", () => {
+  const files = (command: string) =>
+    writtenFiles({ cwd, tool_name: "Bash", tool_input: { command } }).map((f) => f.path);
+  assert.deepEqual(
+    files(`mkdir -p src && printf 'console.log("a > b");\\n' > ${cwd}/src/hello.js`),
+    ["src/hello.js"],
+  );
+  assert.deepEqual(files("echo x >> ./log.txt 2>/dev/null && echo y | tee -a notes.md >&2"), [
+    "log.txt",
+    "notes.md",
+  ]);
+  assert.deepEqual(files("cat <<'EOF' > page.html\n<div>a</div>\nEOF"), ["page.html"]);
+  assert.deepEqual(files("pnpm test > /tmp/test.log 2>&1; ls src"), []);
+  assert.deepEqual(files("git status"), []);
+});
+
+test("a shell write is graded and capped like a file tool write", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "create hello.js that prints hello world" });
+  answer(on, "a new hello.js");
+  on("PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: `printf 'console.log("hi")' > ${cwd}/hello.js` },
+  });
+  const out = on("Stop", { last_assistant_message: report() });
+  assert.match(out.systemMessage, /matched/);
+  const capped = session();
+  capped.on("UserPromptSubmit", { prompt: "create four files" });
+  answer(capped.on, "a, b, c and d");
+  const denied = capped.on("PreToolUse", {
+    tool_name: "Bash",
+    tool_input: { command: "echo 1 > a && echo 2 > b && echo 3 > c && echo 4 > d" },
+  });
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+});
+
 test("missingSections names what a report lacks", () => {
   assert.deepEqual(missingSections("nothing"), ["report"]);
   assert.deepEqual(missingSections("## skarp: what changed\n### Changes"), SECTIONS.slice(1));

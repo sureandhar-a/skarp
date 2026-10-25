@@ -83,7 +83,7 @@ claude plugin marketplace add sureandhar-a/skarp
 claude plugin install skarp@skarp-tools
 ```
 
-skarp needs Node 24.2 or newer on your PATH. For more on what it does, Copilot setup, what it stores and the known gaps, see the [plugin README](plugin/skarp/README.md).
+skarp needs Node 24.2 or newer on your PATH. For more on what it does, what it stores and the known gaps, see the [plugin README](plugin/skarp/README.md).
 
 ### Try it
 
@@ -98,7 +98,7 @@ If skarp is working, you'll see:
 1. **A question card before any code is written**, headed "skarp", asking "Which part of the code do you expect this change to touch?" with a few options and "Skip". The first time, it also asks your level (beginner, intermediate or advanced).
 2. **Your answer releases the task.** Claude then writes `hello.js` without you retyping anything.
 3. **A report at the end**, under the heading `## skarp: what changed`, with Changes, How it works, New ideas, Diagram, Tests and checks, and Check by hand.
-4. **A grade**, telling you whether your answer matched the file Claude really changed.
+4. **A grade**, telling you whether your answer matched the file Claude really changed. skarp sees files that Claude writes with its file tools or with shell redirects (`>`, `>>`, `tee`). If Claude writes a file some other way, such as `cp` or `sed -i`, skarp doesn't see it, so there's no grade for that task. This is a known gap in the preview.
 
 Now send `thanks`. Nothing happens: chat passes straight through.
 
@@ -124,11 +124,52 @@ To update:
 claude plugin marketplace update skarp-tools && claude plugin update skarp@skarp-tools
 ```
 
+Then start a new Claude Code session. Sessions that were already open keep the old version.
+
 To remove:
 
 ```bash
 claude plugin uninstall skarp@skarp-tools
 ```
+
+## Install (VS Code)
+
+### Claude Code extension
+
+Nothing extra to do: the [Claude Code install](#install-claude-code) above covers the extension too. Test it with the same [Try it](#try-it) prompt in the extension's chat.
+
+### GitHub Copilot (experimental)
+
+Copilot's agent mode runs the same hook script through a hooks file in your project. You need VS Code 1.110 or newer.
+
+1. Clone skarp somewhere on your machine:
+   ```bash
+   git clone https://github.com/sureandhar-a/skarp.git ~/skarp
+   ```
+2. In your project folder, create the hooks file that points at skarp's script:
+   ```bash
+   mkdir -p .github/hooks && sed "s#SKARP_HOOK#$HOME/skarp/plugin/skarp/hooks/hook.mjs#" ~/skarp/plugin/skarp/copilot/skarp.json > .github/hooks/skarp.json
+   ```
+3. Turn on hooks and the question card in the project's `.vscode/settings.json`:
+   ```json
+   { "chat.useHooks": true, "chat.askQuestions.enabled": true }
+   ```
+4. Open Copilot Chat, switch it to **Agent** mode, and send:
+   ```text
+   create hello.js that prints hello world
+   ```
+
+If skarp is working, Copilot shows a question card before it writes anything. Copilot often rewords skarp's question (for example as "May I proceed?") and asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message.
+
+At the end of the task, Copilot shows skarp's grade and "report checked" under the reply, as a "Warning from Stop hook". Everything is also logged in `~/.skarp/ledger/hooks.jsonl`.
+
+To update, pull the latest version into the folder you cloned; the hooks file already points there:
+
+```bash
+git -C ~/skarp pull
+```
+
+To remove skarp from a project, delete `.github/hooks/skarp.json`. For how Copilot differs from Claude Code in detail, see the [plugin README](plugin/skarp/README.md#vs-code-copilot-experimental).
 
 ## Your data
 
@@ -180,6 +221,8 @@ After changing `packages/hooks`, rebuild the plugin's hook:
 ```bash
 pnpm build && pnpm --filter @skarp/hooks build:plugin
 ```
+
+To release a fix, raise `version` in `plugin/skarp/.claude-plugin/plugin.json` and the version badge at the top of this README, then commit, push and tag the same version (for example `v0.1.1-preview`). Claude Code keeps each installed plugin under its version, so without a new version `claude plugin update` can keep the old copy.
 
 ## License
 

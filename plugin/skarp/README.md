@@ -42,7 +42,7 @@ Needs Node 24.2 or newer on your PATH (`node --version`). On older Node the hook
 
 Copilot agent mode runs the same hook script through a hooks file in your project.
 
-1. Clone this repo somewhere, for example `~/skarp`.
+1. Clone this repo: `git clone https://github.com/sureandhar-a/skarp.git ~/skarp`
 2. In your project, create the hooks file pointing at the script:
    ```bash
    mkdir -p .github/hooks && sed "s#SKARP_HOOK#$HOME/skarp/plugin/skarp/hooks/hook.mjs#" ~/skarp/plugin/skarp/copilot/skarp.json > .github/hooks/skarp.json
@@ -56,7 +56,7 @@ Copilot agent mode runs the same hook script through a hooks file in your projec
 How it differs from Claude Code:
 - skarp's question uses Copilot's own question card. Copilot may reword it (often as a yes/no "May I proceed?") and shows one question per card, so the Level question is not asked there. Set it by writing `level beginner` (or another level) in a message.
 - Copilot doesn't pass skarp's notes on your message to the AI. skarp's rules reach it only when a tool is refused, so the report can be missing.
-- skarp's end-of-task messages (the grade, "report checked") don't show in Copilot's chat. They are in `~/.skarp/ledger/hooks.jsonl`.
+- skarp's end-of-task messages (the grade, "report checked") show under Copilot's reply as a "Warning from Stop hook". They are also in `~/.skarp/ledger/hooks.jsonl`.
 - Copilot can write several files in one patch. skarp counts each file in it (renames count both names) and refuses the whole patch if it goes past the cap.
 
 To remove it, delete `.github/hooks/skarp.json`.
@@ -74,7 +74,7 @@ There's no account, no network and no telemetry. To delete everything, remove `~
 ## Known gaps in this preview
 
 - **Claude Code, plus VS Code Copilot as experimental.** Copilot's tool names and shapes change between releases, so its file detection may miss a new tool. Antigravity and Codex are coming next; see [What's next](../../README.md#whats-next).
-- **File writes through the shell** (for example `cat > file`) are not capped or graded. Only the Edit, Write, MultiEdit and NotebookEdit tools are.
+- **Some file writes through the shell are not seen.** skarp caps and grades files written with the Edit, Write, MultiEdit and NotebookEdit tools, and with shell redirects and `tee` (`> file`, `>> file`, `tee file`). Other shell writes, such as `cp`, `mv`, `sed -i` or a script that writes files, are not capped or graded.
 - **The grade is word matching** between your answer and the changed files, not understanding. The threshold is a first guess.
 - **The report's teaching quality is written by the model and not graded.** skarp checks that the sections are there, in order and not empty, and catches common praise and test claims. It doesn't check how well the report teaches.
 - **Test results are read from the exit code.** A test run piped into another command (`npm test | tail`) counts as unknown, so "tests pass" is sent back.

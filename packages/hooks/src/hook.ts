@@ -481,9 +481,10 @@ function grade(s: Session, sid: string, log: (type: string, payload: object) => 
 // adds or changes several files, under a name like apply_patch or as the whole input.
 export function writtenFiles(input: HookInput): { path: string; content: string }[] {
   const tool = input.tool_name ?? "";
-  if (!WRITES.has(tool) && !/create|edit|replace|insert|patch|write/i.test(tool)) return [];
   const ti = input.tool_input ?? {};
   const rel = (p: string) => (isAbsolute(p) ? relative(input.cwd ?? "", p) : p) || "?";
+  if (RUNS.test(tool)) return shellWrites(String(ti.command ?? ""), rel);
+  if (!WRITES.has(tool) && !/create|edit|replace|insert|patch|write/i.test(tool)) return [];
   if (typeof ti.input === "string" && /^\*\*\* (Add|Update|Delete) File: /m.test(ti.input)) {
     const patch = ti.input;
     const paths = [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)];
@@ -518,6 +519,26 @@ export function writtenFiles(input: HookInput): { path: string; content: string 
     .filter(Boolean)
     .join("\n");
   return [{ path: rel(path), content }];
+}
+
+// Files a shell command writes in the project: `> f`, `>> f` and `tee [-a] f`. Heredoc bodies and
+// quoted text are dropped first, so `<div>` or 'a > b' are not read as writes; fd redirects
+// (2>, >&2), /dev/* and paths outside the project don't count.
+// ponytail: redirects and tee only; sed -i, cp, mv and scripts writing files are not seen (the
+// desktop app's file watcher covers those)
+function shellWrites(cmd: string, rel: (p: string) => string): { path: string; content: string }[] {
+  const bare = cmd
+    .replace(/<<-?\s*['"]?(\w+)['"]?([^\n]*)\n[\s\S]*?\n\s*\1[ \t]*(?=\n|$)/g, "$2")
+    .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, "''");
+  const targets = [
+    ...bare.matchAll(/(?<![\d&<>])>>?\s*([^\s;&|<>()]+)/g),
+    ...bare.matchAll(/\btee\s+(?:-a\s+)?([^\s;&|<>()]+)/g),
+  ].map((m) => m[1] ?? "");
+  const paths = targets
+    .filter((p) => p && !p.startsWith("/dev/"))
+    .map((p) => rel(p).replace(/^\.\//, ""))
+    .filter((p) => !p.startsWith(".."));
+  return [...new Set(paths)].map((path) => ({ path, content: cmd }));
 }
 
 // VS Code's Copilot harness sends camelCase and may leave the event name out: the hooks
