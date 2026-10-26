@@ -13,7 +13,7 @@
     "skarp": "bin/skarp.mjs"
   },
   "files": [
-    "bin",
+    "bin/skarp.mjs",
     "hook.mjs"
   ],
   "engines": {
