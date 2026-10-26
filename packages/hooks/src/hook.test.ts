@@ -99,6 +99,7 @@ test("Stop sends the AI back once for a missing section, then lets it finish", (
   const { on } = session();
   on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
   answer(on, "src/a.ts logger");
+  on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/src/a.ts", content: "x" } });
   const first = on("Stop", { last_assistant_message: "Done, no report." });
   assert.equal(first.decision, "block");
   const second = on("Stop", { last_assistant_message: "Still none.", stop_hook_active: true });
@@ -219,6 +220,7 @@ test("Copilot: a Stop with no reply text reads it from the transcript", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "add math helpers in src/math.js" });
   answer(on, "src/math.js");
+  on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/src/a.ts", content: "x" } });
   const transcript = join(mkdtempSync(join(tmpdir(), "skarp-t-")), "t.jsonl");
   writeFileSync(
     transcript,
@@ -377,6 +379,7 @@ test("an owed report given later clears the flag", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
   answer(on, "src/a.ts logger");
+  on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/src/a.ts", content: "x" } });
   on("Stop", { last_assistant_message: "none" });
   on("Stop", { last_assistant_message: "none", stop_hook_active: true });
   on("UserPromptSubmit", { prompt: "ok go on" });
@@ -593,4 +596,64 @@ test("brainstorm: an idea in the request skips the question; deciding needs two 
   on("UserPromptSubmit", { prompt: "done" });
   assert.match(ctx(on("UserPromptSubmit", { prompt: "let's decide" })), /at least two options/);
   assert.match(ctx(on("UserPromptSubmit", { prompt: "your ideas please" })), /stress test/);
+});
+
+test("a bug fix over three turns: one question, status while unfinished, one report and one grade on all files", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
+  const on = (event: string, extra: object = {}): any =>
+    handle({ session_id: "m1", cwd, hook_event_name: event, ...extra }, home);
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  const start = on("UserPromptSubmit", {
+    prompt: "login fails on empty password in src/auth.ts, can you fix it",
+  });
+  assert.match(ctx(start), /Where do you think the bug is/);
+  assert.match(ctx(start), /What would show it's fixed/);
+  on("PostToolUse", {
+    tool_name: "AskUserQuestion",
+    tool_response: { answers: { q1: "src/auth.ts validate", q2: "A test passes", q3: "beginner" } },
+  });
+  const write = (f: string) =>
+    on("PreToolUse", {
+      tool_name: "Edit",
+      tool_input: { file_path: `${cwd}/${f}`, new_string: "x" },
+    });
+  write("src/auth.ts");
+  // turn 1 ends unfinished, with a status: nothing owed, no grade yet
+  assert.equal(
+    on("Stop", { last_assistant_message: "Tried a guard.\n### skarp: status\nnext: run it" }),
+    undefined,
+  );
+  const turn2 = on("UserPromptSubmit", { prompt: "still failing" });
+  assert.match(ctx(turn2), /continues the open task/);
+  assert.doesNotMatch(ctx(turn2), /AskUserQuestion/);
+  write("src/validate.ts");
+  // changed files with neither status nor report: sent back once
+  assert.match(
+    on("Stop", { last_assistant_message: "Changed it." }).reason,
+    /neither the report nor a status/,
+  );
+  on("Stop", { last_assistant_message: "x\n### skarp: status\nnext", stop_hook_active: true });
+  const turn3 = on("UserPromptSubmit", { prompt: "works now" });
+  assert.match(ctx(turn3), /Give the full skarp report now/);
+  assert.match(ctx(turn3), /"A test passes"/);
+  const end = on("Stop", { last_assistant_message: report() });
+  assert.match(end.systemMessage, /2 files|went where/);
+  const outcomes = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8")
+    .split("\n")
+    .filter((l) => l.includes('"outcome"'));
+  assert.equal(outcomes.length, 1);
+});
+
+test("an open task: a different task starts fresh, 'actually' replaces, a reply with nothing changed owes nothing", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
+  answer(on, "src/a.ts");
+  assert.equal(on("Stop", { last_assistant_message: "Looking around first." }), undefined);
+  const other = on("UserPromptSubmit", { prompt: "add a cache to src/b.ts" });
+  assert.match(other.hookSpecificOutput.additionalContext, /AskUserQuestion/);
+  answer(on, "src/b.ts");
+  const replaced = on("UserPromptSubmit", { prompt: "actually, rename foo in src/b.ts" });
+  assert.doesNotMatch(replaced.hookSpecificOutput.additionalContext, /continues the open task/);
 });

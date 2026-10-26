@@ -75,6 +75,8 @@ interface Session {
   explainBack?: boolean; // an explanation ended with skarp's "this works because ___"
   bs?: Brainstorm; // the open brainstorm
   lastDecision?: string; // the last brainstorm's decision: "build it" starts it as a task
+  check?: string; // for a bug: what the user says would show it's fixed
+  closing?: boolean; // the user said it's done: the report is due this turn
 }
 
 interface Brainstorm {
@@ -325,6 +327,22 @@ export function handle(input: HookInput, home: string): object | undefined {
       closeBrainstorm(s, s.bs, home, log);
       save();
     }
+    // an open task carries on across turns ("still failing", "try the other file") until it's done
+    const open = s.mode === "task" && s.reportDue && s.task !== undefined;
+    if (open && !REPLACES.test(said) && !newTask(s, prompt)) {
+      const lvl = level ?? profile.level ?? "intermediate";
+      if (DONE_TASK.test(said)) {
+        s.closing = true;
+        log("task_closing", {});
+        save();
+        return context(
+          `${owed}The user says the task is done: ${s.task}\nGive the full skarp report now, covering every change in this task.\n${rulesFor(s, lvl)}`,
+        );
+      }
+      log("task_continues", {});
+      save();
+      return context(`${owed}This continues the open task: ${s.task}\n${rulesFor(s, lvl)}`);
+    }
     // "build it" after a brainstorm: its decision is the plan, so skarp doesn't ask twice
     if (s.lastDecision && BUILD_IT.test(said)) {
       const decision = s.lastDecision;
@@ -409,6 +427,7 @@ export function handle(input: HookInput, home: string): object | undefined {
         step.reason,
         `${step.block.brief} Use 2 or 3 options from the task's words alone.`,
         askLevel,
+        step.block.id === BUG_BLOCK,
       );
     }
     save();
@@ -444,6 +463,12 @@ export function handle(input: HookInput, home: string): object | undefined {
     } else {
       s.answer = commit;
       log("answer", { block: asked.block, text: commit });
+    }
+    // a bug's second question: what would show it's fixed (a level answer is not one)
+    const check = asked.block === BUG_BLOCK ? answers[1] : undefined;
+    if (check && !levelAnswer(check) && !/^skip\b/i.test(check)) {
+      s.check = check;
+      log("answer", { block: "check", text: check });
     }
     s.asking = undefined;
     if (s.mode === "brainstorm" && s.bs) {
@@ -591,6 +616,25 @@ export function handle(input: HookInput, home: string): object | undefined {
       };
     }
     const kind = s.mode ?? "task";
+    // not done yet: a short status keeps the task open, and the report waits until it's done
+    if (kind === "task" && !reply.includes(TASK_REPORT.head) && !s.closing) {
+      if (/#{2,3} skarp: status/.test(reply)) {
+        log("progress", { files: s.touched.length });
+        s.sentBack = false;
+        save();
+        return undefined;
+      }
+      if (!s.touched.length) return undefined; // nothing changed yet: nothing is owed
+      if (!s.sentBack && !input.stop_hook_active) {
+        s.sentBack = true;
+        save();
+        return {
+          decision: "block",
+          reason:
+            "skarp: you changed files but gave neither the report nor a status. If the task is done, give the full `## skarp: what changed` report; if not, end with `### skarp: status` (found so far, tried, next step).",
+        };
+      }
+    }
     saveReport(home, kind, reply, log);
     const shape = reportFixes(reply, kind === "explain" ? EXPLAIN_REPORT : TASK_REPORT);
     const failed = new Set(
@@ -625,6 +669,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     Object.assign(s, {
       reportDue: false,
       sentBack: false,
+      closing: false,
       explainOwed: kind === "task" && fixes.length > 0,
       explainBack: kind === "explain" && !fixes.length,
     });
@@ -805,13 +850,45 @@ function fresh(task: string, mode: Mode): Partial<Session> {
     reportDue: true,
     sentBack: false,
     explainBack: false,
+    check: undefined,
+    closing: false,
   };
 }
 
 // The rules for the open work, given after skarp's question (and in deny reasons for Copilot).
 function rulesFor(s: Session, level: Level): string {
   if (s.mode === "explain") return `${explainRules(s.answer)}\n${DEPTH[level]}`;
-  return `Change at most ${CAP} files in this slice; skarp refuses more.\n${reportRules(level)}`;
+  return [
+    `Change at most ${CAP} files in this slice; skarp refuses more.`,
+    PROGRESS_RULE,
+    reportRules(level),
+    s.check
+      ? `Under ### Tests and checks, also say whether "${s.check}" (the user's own check for the fix) was done, and its result.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+const PROGRESS_RULE =
+  "If the task isn't finished at the end of this reply (still investigating, or a fix not yet confirmed), end with `### skarp: status` (found so far, tried, next step) instead of the report. Give the full report only when the task is done.";
+// "fixed", "works now", "that did it": the user closes the open task
+const DONE_TASK =
+  /^(it'?s )?(fixed|works( now)?|working( now)?|that (did it|worked|fixed it)|all good|done|ship it|looks good)\b/i;
+const BUG_BLOCK = "A14";
+
+// A message during an open task is a new task only when it names different work: task verbs,
+// plus a file the task hasn't touched, or no telling word in common with it.
+const PLAIN =
+  /^(fix|add|create|build|implement|change|refactor|write|make|update|remove|delete|rename|move|migrate|generate|debug|convert|replace|please|also|again|this|that|file|code|test|tests|src|ts|js|tsx|jsx|py|now|still|then)$/;
+function newTask(s: Session, prompt: string): boolean {
+  if (wantsExplain(prompt) || wantsBrainstorm(prompt)) return true;
+  if (classifyMessage(prompt) !== "task") return false;
+  const known = new Set(tokens([s.task ?? "", ...s.touched.map((t) => t.path)].join(" ")));
+  const words = tokens(prompt);
+  if (words.some((w) => /[./]/.test(w) && !known.has(w))) return true; // a file it hasn't touched
+  const telling = words.filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w));
+  return !telling.some((w) => known.has(w));
 }
 
 const hintRule = (hints: string[]) =>
@@ -982,12 +1059,21 @@ function deny(reason: string) {
 }
 
 // skarp's question goes through Claude Code's own question card, so it is an input, not a warning.
-export function askRule(question: string, reason: string, options: string, level: boolean): string {
+export function askRule(
+  question: string,
+  reason: string,
+  options: string,
+  level: boolean,
+  check = false,
+): string {
   return `${[
     "skarp rule, before anything else: ask the user with your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), so they get a question card.",
     `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
+    check
+      ? 'Question 2, header "Check": "What would show it\'s fixed?" with options "A test passes", "I\'ll try it by hand", "Not sure"; the user can also type their own.'
+      : "",
     level
-      ? 'Question 2, header "Level": "Your level, so skarp\'s explanations fit you?" with options "beginner", "intermediate", "advanced".'
+      ? `Question ${check ? 3 : 2}, header "Level": "Your level, so skarp's explanations fit you?" with options "beginner", "intermediate", "advanced".`
       : "",
     "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and options as text and stop; the user's next message is the answer.",
     "Do not read files, run commands or start the work until the user answers; skarp refuses other tools until then. After the answer, do what the user asked.",
