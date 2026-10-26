@@ -111,9 +111,6 @@ const PIPED = /(^|[^|])\|([^|]|$)/; // `npm test | tail` exits 0 even when tests
 // praise the kernel's list misses
 const MORE_PRAISE =
   /\b(nice (idea|work|job|plan)|awesome|amazing|you nailed it|great (job|work|idea|plan|choice))\b/i;
-// a test result stated as numbers: "2/2 passing", "all 5 tests pass"
-const TESTS_CLAIM =
-  /\b\d+\s*\/\s*\d+\s+(?:tests?\s+)?(?:pass|passing|passed)\b|\ball\s+(?:\d+\s+)?tests?\s+(?:are\s+)?(?:pass|passing|green)\b/i;
 // referee checks that make sense on a report; the rest need the in-app chat loop
 const REPORT_FAILS: Record<string, string> = {
   praise: "Remove the praise; state facts only.",
@@ -660,7 +657,6 @@ export function handle(input: HookInput, home: string): object | undefined {
       }).filter((f) => f in REPORT_FAILS),
     );
     if (MORE_PRAISE.test(reply)) failed.add("praise");
-    if (TESTS_CLAIM.test(reply) && !s.testsPassed) failed.add("untested_claim");
     const fixes = [...shape, ...[...failed].map((f) => REPORT_FAILS[f])];
     log("referee", { check: "report", shape, failed: [...failed] });
     if (fixes.length && !s.sentBack && !input.stop_hook_active) {
@@ -685,7 +681,8 @@ export function handle(input: HookInput, home: string): object | undefined {
       sentBack: false,
       closing: false,
       explainOwed: kind === "task" && fixes.length > 0,
-      explainBack: kind === "explain" && !fixes.length,
+      // the own-words question was asked, whatever else the check found
+      explainBack: kind === "explain" && /### Your turn|this works because/i.test(reply),
     });
     save();
     return { systemMessage: lines.join("\n") };

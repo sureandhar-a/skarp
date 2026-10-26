@@ -694,3 +694,16 @@ test("the question as text: the AI's own numbered options are sent back once", (
   });
   assert.match(text.reason, /exactly these options/);
 });
+
+test("an honest failing-test line doesn't block the own-words step after an explanation", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "explain the repo to me" });
+  answer(on, "a cart module", "beginner");
+  on("PostToolUse", { tool_name: "Bash", tool_input: { command: "node --test 2>&1 | tail -40" } });
+  const end = on("Stop", {
+    last_assistant_message: explained("Its test fails right now (1 pass, 1 fail)."),
+  });
+  assert.match(end.systemMessage, /explanation checked/);
+  const back = on("UserPromptSubmit", { prompt: "total adds price times qty" });
+  assert.match(back.hookSpecificOutput.additionalContext, /what in their answer matches the code/);
+});

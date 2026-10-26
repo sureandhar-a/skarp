@@ -195,7 +195,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.a
   const opts = { project: flags.includes("--project"), all: flags.includes("--all") };
   const run = { setup, status, remove }[cmd ?? ""];
   if (!run) {
-    console.log(`skarp ${VERSION}\nUsage: npx skarp-copilot setup [--project] | status | remove [--all]`);
+    console.log(
+      `skarp ${VERSION}\nUsage: npx skarp-copilot setup [--project] | status | remove [--all]`,
+    );
     process.exit(cmd ? 1 : 0);
   }
   process.exit(run(opts));
