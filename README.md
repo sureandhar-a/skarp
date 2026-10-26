@@ -3,7 +3,7 @@
 # skarp
 
 ![status: preview](https://img.shields.io/badge/status-preview-orange)
-![version: 0.1.0-preview](https://img.shields.io/badge/version-0.1.0--preview-blue)
+![version: 0.2.0-preview](https://img.shields.io/badge/version-0.2.0--preview-blue)
 ![license: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-D97757)
 
@@ -14,7 +14,7 @@ skarp is an assist mode for coding with AI. While the AI writes the code, skarp 
 
 skarp enforces this with hooks instead of asking the AI nicely. Your plan comes first, the AI changes only a few files at a time, your plan is compared with what the AI actually changed, and every change ends with an explanation and a diagram that skarp checks.
 
-**Status:** `0.1.0-preview`. A Claude Code plugin for the CLI, the desktop app and the VS Code extension, with experimental support for GitHub Copilot in VS Code. Everything runs locally: no account, no network, no telemetry.
+**Status:** `0.2.0-preview`. A Claude Code plugin for the CLI, the desktop app and the VS Code extension, with experimental support for GitHub Copilot in VS Code. Everything runs locally: no account, no network, no telemetry.
 
 ## The idea
 
@@ -26,24 +26,26 @@ skarp enforces this with hooks instead of asking the AI nicely. Your plan comes 
 
 | Moment | What you do | In this preview |
 |---|---|---|
-| **Commit** | Write down your own view before the AI shows its own | Yes: a question before every task |
-| **Fly** | Let the AI build in small steps, which grow as you show you know the area | Partly: at most 3 files per task |
+| **Commit** | Write down your own view before the AI shows its own | Yes: a question before every task, explanation and brainstorm |
+| **Fly** | Let the AI build in small steps, which grow as you show you know the area | Coming |
 | **Check** | Let real results, not the AI's word, judge your prediction | Partly: your plan is compared with the real change |
-| **Challenge** | Test the AI's work or plan before you accept it | Partly: when a task edits only a test, or can't be undone |
+| **Challenge** | Test the AI's work or plan before you accept it | Partly: when a task edits only a test or can't be undone, and the brainstorm stress test |
 | **Hear** | Take in what the AI actually looked at, and why | Coming |
-| **Explain** | Say it in your own words | Coming |
+| **Explain** | Say it in your own words | Partly: an explanation ends with "this works because ___" |
 | **Return** | Meet it again later, in a new form, so it sticks | Coming |
 
 **Why this isn't just a prompt.** A prompt is text that a model may or may not follow. skarp's decisions, checks and memory live in code and in a local record outside the model. If you switch models or delete the chat, the record of what you've shown you understand is still there.
 
 ## How it works
 
-You give Claude a task as usual. skarp steps in at four points:
+You give Claude or Copilot a task as usual. skarp steps in at four points:
 
-1. **Before the AI starts**, skarp asks you one question, such as "Which part of the code do you expect this change to touch?" It saves your task, so you don't have to type it again.
-2. **While the AI works**, it can change at most 3 files per task. skarp refuses anything beyond that and says why.
-3. **When the AI finishes**, skarp compares your answer with the files the AI actually changed. It tells you either that your plan matched the change, or where the change went instead.
+1. **Before the AI starts**, skarp asks you one question, such as "Where do you think the bug is?" The options are neutral hints from skarp, never the AI's own guesses, and free text always works. It saves your task, so you don't have to type it again.
+2. **While the AI works**, the task stays open across messages: "still failing" continues it without a new question. Until the work is done, the AI ends each turn with a short status instead of the report.
+3. **When the task is done**, skarp compares your answer with every file the task changed. It tells you either that your plan matched the change, or where the change went instead.
 4. **Every task ends with a report**: what changed, how it works, new ideas, a diagram, tests, and what to check by hand. skarp checks the report in code and sends it back once if a section is missing, if it contains praise, or if it claims tests passed when none were run.
+
+Explanations and brainstorms get their own flow, below.
 
 What skarp never does:
 
@@ -54,7 +56,7 @@ What skarp never does:
 
 ## What this preview covers
 
-skarp reads your message and picks the question that fits it. Every request that changes code also gets the 3-file limit and the checked report.
+skarp reads your message and picks the question that fits it. Every request that changes code also gets the checked report.
 
 | You ask Claude to… | Example | skarp first asks |
 |---|---|---|
@@ -64,12 +66,22 @@ skarp reads your message and picks the question that fits it. Every request that
 | Make a failing test pass by editing the test | "change the expected value so the test passes" | "Is the test wrong, or the code?" |
 | Do something that can't be undone | "delete all the old migration files" | "What does this destroy, and how would you undo it?" |
 
-These pass straight through, with no question, limit or report:
+| Ask for an explanation | "explain the repo to me", "how does the cache work?" | "What do you think it does now, and which part matters most to you?" |
+| Brainstorm | "can we brainstorm on caching?", "I have a rough idea: …" | "What's your idea or first guess?" |
 
-- **Questions and chat**, such as "how does useEffect cleanup work?" or "thanks".
-- **Requests to understand code**, such as "explain src/auth/session.ts" or "help me understand the last commit". Guided understanding, where skarp splits the code into pieces and asks you to explain each one back, is planned for the [desktop app](#whats-next).
+**Explain.** After your guess, the AI must give a checked explanation under `## skarp: explained`: big picture, diagram, key pieces, how a request flows, new ideas, where to start reading, your guess compared with the code, and a last question for you: "this works because ___". It changes no files.
 
-Once you've shown that you know an area, its question gets lighter (a one-tap confirmation) and then stops. The file limit and the report stay.
+<a id="brainstorm"></a>**Brainstorm.** The AI acts as a senior colleague who asks questions and stress-tests your ideas, not an idea generator or a yes-man:
+
+1. **You go first**, and the AI stays quiet while you list your ideas. People who think alone first and then pool their ideas produce about three times as many (Girotra et al., 2010), and AI ideas shown first make people's ideas converge (Doshi & Hauser, 2024).
+2. **It asks rather than tells.** In a pre-registered trial with 486 people, an AI that asked reflective questions improved idea quality and kept ideas more varied and more your own than an AI that rewrote them (Maier et al., 2025, preprint).
+3. **Each idea is restated neutrally before it's judged**, because models agree more with ideas stated in the first person and with confidence ("Ask Don't Tell", UK AISI, 2026, preprint). Agreement with no evidence is sent back.
+4. **Every verdict needs evidence**, a pre-mortem comes before hard-to-undo decisions, and **you decide**, with at least two options and your reason in your own words.
+5. **It's all kept**: the conversation, every idea (who raised it, for and against, verdict, evidence) and the decision, so you can continue it later.
+
+These pass straight through, with no question or report: **questions and chat**, such as "thanks" or a quick one-line question.
+
+Once you've shown that you know an area, its task question gets lighter (a one-tap confirmation) and then stops. The report stays.
 
 ## Install (Claude Code)
 
@@ -140,40 +152,33 @@ Nothing extra to do: the [Claude Code install](#install-claude-code) above cover
 
 ### GitHub Copilot (experimental)
 
-Copilot's agent mode runs the same hook script through a hooks file in your project. You need VS Code 1.110 or newer.
-
-1. Clone skarp somewhere on your machine:
-   ```bash
-   git clone https://github.com/sureandhar-a/skarp.git ~/skarp
-   ```
-2. In your project folder, create the hooks file that points at skarp's script:
-   ```bash
-   mkdir -p .github/hooks && sed "s#SKARP_HOOK#$HOME/skarp/plugin/skarp/hooks/hook.mjs#" ~/skarp/plugin/skarp/copilot/skarp.json > .github/hooks/skarp.json
-   ```
-3. Turn on hooks and the question card in the project's `.vscode/settings.json`:
-   ```json
-   { "chat.useHooks": true, "chat.askQuestions.enabled": true }
-   ```
-4. Open Copilot Chat, switch it to **Agent** mode, and send:
-   ```text
-   create hello.js that prints hello world
-   ```
-
-If skarp is working, Copilot shows a question card before it writes anything. Copilot often rewords skarp's question (for example as "May I proceed?") and asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message.
-
-At the end of the task, Copilot shows skarp's grade and "report checked" under the reply, as a "Warning from Stop hook". Everything is also logged in `~/.skarp/ledger/hooks.jsonl`.
-
-To update, pull the latest version into the folder you cloned; the hooks file already points there:
+You need VS Code 1.110 or newer and Node 24.2 or newer. One command sets skarp up for all your projects:
 
 ```bash
-git -C ~/skarp pull
+npx skarp setup
 ```
 
-To remove skarp from a project, delete `.github/hooks/skarp.json`. For how Copilot differs from Claude Code in detail, see the [plugin README](plugin/skarp/README.md#vs-code-copilot-experimental).
+It copies skarp's hook to `~/.skarp/bin/` and writes `~/.copilot/hooks/skarp.json`. Then open Copilot Chat, in whatever mode you use, and send:
+
+```text
+create hello.js that prints hello world
+```
+
+If skarp is working, Copilot shows skarp's question before it writes anything. Check what ran with:
+
+```bash
+npx skarp status
+```
+
+It prints what's installed and whether your last piece of work was asked, answered and saved, with ✓/✗ and field names only, never what you wrote. If nothing was logged, your VS Code may use its older Local runtime; run `npx skarp setup --project` in your project and reload VS Code.
+
+Copilot asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message. skarp's grade shows under the reply as a "Warning from Stop hook".
+
+To update, run `npx skarp@latest setup`. To remove, run `npx skarp remove`. For how Copilot differs from Claude Code, see the [plugin README](plugin/skarp/README.md#github-copilot-in-vs-code-experimental).
 
 ## Your data
 
-Everything stays on your machine in `~/.skarp`, outside your project, so the AI doesn't read it. This includes your saved task for each session, a log (the ledger) of every question, answer, skip and grade, and your level. There's no account, no network and no telemetry. To delete everything, remove `~/.skarp`.
+Everything stays on your machine in `~/.skarp`, outside your project, so the AI doesn't read it. This includes a log (the ledger) of every question, answer, skip and grade with its project folder, every report and explanation as a Markdown file in `reports/`, every brainstorm (its conversation, ideas and decision) in `brainstorms/`, and your level. There's no account, no network and no telemetry. To delete everything, remove `~/.skarp`.
 
 ## What's next
 
@@ -182,7 +187,8 @@ This preview is the first, smallest part of skarp. Next on the plan:
 - **The skarp desktop app** for macOS and Windows. It runs outside the coding agent, controls it through the agent's own hooks, and has its own window for questions, grades and your history.
 - **More agents:** Antigravity, then Codex.
 - **A file watcher**, so that changes made through the shell (such as `cat > file`) are also seen and logged, not just changes made with the AI's file tools.
-- **More questions after the change**, not only before it: explain it back, predict a test result, and revisit it later.
+- **More questions after the change**: predict a test result, and revisit it later.
+- **Checking claims against the code**: in a brainstorm, the AI's factual claims ("no cache exists") verified by reading the repo.
 - **Your history:** a view of what you've owned, skipped or still owe, built from the local ledger.
 
 ## Feedback and bugs
@@ -200,6 +206,7 @@ This is a preview, and your feedback shapes what comes next. Open an [issue](htt
 | `packages/core` | Sessions, the agent loop and ports; `handle(message) -> messages` |
 | `packages/rpc` | JSON-RPC over stdio (planned) |
 | `packages/ui` | React + Tailwind kit, design tokens and Storybook |
+| `packages/cli` | `npx skarp`: Copilot setup, status and remove (published to npm as `skarp`) |
 | `packages/vscode` | The VS Code extension (in progress, not released) |
 | `packages/conformance` | A test suite that drives `core` through a scripted host |
 | `assets/` | Brand marks |
@@ -222,7 +229,7 @@ After changing `packages/hooks`, rebuild the plugin's hook:
 pnpm build && pnpm --filter @skarp/hooks build:plugin
 ```
 
-To release a fix, raise `version` in `plugin/skarp/.claude-plugin/plugin.json` and the version badge at the top of this README, then commit, push and tag the same version (for example `v0.1.1-preview`). Claude Code keeps each installed plugin under its version, so without a new version `claude plugin update` can keep the old copy.
+To release a fix, raise `version` in `plugin/skarp/.claude-plugin/plugin.json`, in `packages/cli/package.json` and in the version badge at the top of this README, then commit, push and tag the same version (for example `v0.2.1-preview`), and publish the CLI with `cd packages/cli && npm publish --tag preview`. Claude Code keeps each installed plugin under its version, so without a new version `claude plugin update` can keep the old copy.
 
 ## License
 

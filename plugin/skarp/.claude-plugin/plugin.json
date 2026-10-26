@@ -1,7 +1,9 @@
 {
   "name": "skarp",
-  "version": "0.1.0-preview",
-  "description": "Own what you ship: skarp asks for your plan before the AI codes, caps each slice, grades your plan against what really changed, and makes every change end with a checked explanation and diagram.",
-  "author": { "name": "sureandhar" },
+  "version": "0.2.0-preview",
+  "description": "Own what you ship: skarp asks for your view before the AI starts, checks every report, explanation and brainstorm in code, grades your plan against what really changed, and keeps a local record.",
+  "author": {
+    "name": "sureandhar"
+  },
   "license": "MIT"
 }
