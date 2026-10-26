@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// skarp's installer for GitHub Copilot: `npx skarp setup | status | remove`. No dependencies.
+// skarp's installer for GitHub Copilot: `npx skarp-copilot setup | status | remove`. No dependencies.
 // It copies the bundled hook to ~/.skarp/bin and points Copilot's user-level hooks file at it, so
 // one setup covers every project. Nothing here sends anything anywhere.
 import {
@@ -71,7 +71,7 @@ export function setup({ home, cwd, project = false, out = console.log } = {}) {
   if (!nodeOk()) {
     // Copilot blocks every tool when a hook can't start, so a too-old Node installs nothing
     out(`skarp needs Node ${MIN_NODE.join(".")} or newer; this is ${process.versions.node}.`);
-    out("Nothing was installed. Update Node, then run `npx skarp setup` again.");
+    out("Nothing was installed. Update Node, then run `npx skarp-copilot setup` again.");
     return 1;
   }
   mkdirSync(dirname(p.hook), { recursive: true, mode: 0o700 });
@@ -103,12 +103,12 @@ export function setup({ home, cwd, project = false, out = console.log } = {}) {
   }
   if (existsSync(p.userHooks) && existsSync(p.projectHooks))
     out(
-      "! Both user and project hooks exist; skarp may run twice. Remove one with `npx skarp remove`.",
+      "! Both user and project hooks exist; skarp may run twice. Remove one with `npx skarp-copilot remove`.",
     );
   out(
     `skarp ${VERSION} is set up. Open Copilot Chat and send: create hello.js that prints hello world`,
   );
-  out("You should see skarp's question first. Then run `npx skarp status`.");
+  out("You should see skarp's question first. Then run `npx skarp-copilot status`.");
   return 0;
 }
 
@@ -146,7 +146,7 @@ export function status({ home, cwd, out = console.log } = {}) {
   ])
     if (existsSync(file)) out(`${mark(validHooks(file))} ${name}: ${file}`);
   if (!existsSync(p.userHooks) && !existsSync(p.projectHooks))
-    out("✗ no hooks file: run `npx skarp setup`");
+    out("✗ no hooks file: run `npx skarp-copilot setup`");
   const lines = readLines(p.ledger);
   if (!lines.length) {
     out(
@@ -195,7 +195,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.a
   const opts = { project: flags.includes("--project"), all: flags.includes("--all") };
   const run = { setup, status, remove }[cmd ?? ""];
   if (!run) {
-    console.log(`skarp ${VERSION}\nUsage: npx skarp setup [--project] | status | remove [--all]`);
+    console.log(`skarp ${VERSION}\nUsage: npx skarp-copilot setup [--project] | status | remove [--all]`);
     process.exit(cmd ? 1 : 0);
   }
   process.exit(run(opts));

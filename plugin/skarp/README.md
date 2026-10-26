@@ -51,7 +51,7 @@ Remove it with `claude plugin uninstall skarp@skarp-tools`. Needs Node 24.2 or n
 ### GitHub Copilot in VS Code (experimental)
 
 ```bash
-npx skarp setup
+npx skarp-copilot setup
 ```
 
 This copies skarp's hook to `~/.skarp/bin/` and writes one user-level hooks file, `~/.copilot/hooks/skarp.json`, for all your projects. It checks Node first and installs nothing if Node is too old. Then open Copilot Chat in any mode and send `create hello.js that prints hello world`.
@@ -59,12 +59,12 @@ This copies skarp's hook to `~/.skarp/bin/` and writes one user-level hooks file
 If no question appears, your VS Code may use the older Local runtime. In your project, run:
 
 ```bash
-npx skarp setup --project
+npx skarp-copilot setup --project
 ```
 
 This writes `.github/hooks/skarp.json` and switches on `chat.useHooks` in `.vscode/settings.json`, keeping your other settings. Reload VS Code.
 
-To check it, run `npx skarp status`. It shows what's installed and whether your last task, explanation or brainstorm went through each step, with field names and ✓/✗ only, never what you wrote. Update with `npx skarp@latest setup`. Remove with `npx skarp remove` (add `--all` to delete your records too).
+To check it, run `npx skarp-copilot status`. It shows what's installed and whether your last task, explanation or brainstorm went through each step, with field names and ✓/✗ only, never what you wrote. Update with `npx skarp-copilot@latest setup`. Remove with `npx skarp-copilot remove` (add `--all` to delete your records too).
 
 How Copilot differs from Claude Code:
 - Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules once when the session starts and enforces them by refusing tools and sending replies back.
@@ -81,11 +81,11 @@ Everything stays on your machine in `~/.skarp`, outside your project, so the AI 
 - `sessions/`: the open work per session
 - `profile.json`: your level
 
-There's no account, no network and no telemetry. To delete everything, remove `~/.skarp` (or run `npx skarp remove --all`).
+There's no account, no network and no telemetry. To delete everything, remove `~/.skarp` (or run `npx skarp-copilot remove --all`).
 
 ## Known gaps in this preview
 
-- **Claude Code, plus Copilot as experimental.** Copilot's tool names and shapes change between releases, so its file detection may miss a new tool. Whether hooks run in Copilot's Ask mode is not documented; `npx skarp status` shows whether they did.
+- **Claude Code, plus Copilot as experimental.** Copilot's tool names and shapes change between releases, so its file detection may miss a new tool. Whether hooks run in Copilot's Ask mode is not documented; `npx skarp-copilot status` shows whether they did.
 - **Some file writes through the shell are not seen.** skarp sees the Edit, Write, MultiEdit and NotebookEdit tools, shell redirects and `tee`. `cp`, `mv`, `sed -i` or a script that writes files are not graded.
 - **The grade is word matching** between your answer and the changed files, not understanding.
 - **Checks are on shape and wording, not truth.** skarp checks sections, quotes, evidence markers and praise. It doesn't check that the AI's verdicts or explanations are right.

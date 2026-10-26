@@ -155,7 +155,7 @@ Nothing extra to do: the [Claude Code install](#install-claude-code) above cover
 You need VS Code 1.110 or newer and Node 24.2 or newer. One command sets skarp up for all your projects:
 
 ```bash
-npx skarp setup
+npx skarp-copilot setup
 ```
 
 It copies skarp's hook to `~/.skarp/bin/` and writes `~/.copilot/hooks/skarp.json`. Then open Copilot Chat, in whatever mode you use, and send:
@@ -167,14 +167,14 @@ create hello.js that prints hello world
 If skarp is working, Copilot shows skarp's question before it writes anything. Check what ran with:
 
 ```bash
-npx skarp status
+npx skarp-copilot status
 ```
 
-It prints what's installed and whether your last piece of work was asked, answered and saved, with ✓/✗ and field names only, never what you wrote. If nothing was logged, your VS Code may use its older Local runtime; run `npx skarp setup --project` in your project and reload VS Code.
+It prints what's installed and whether your last piece of work was asked, answered and saved, with ✓/✗ and field names only, never what you wrote. If nothing was logged, your VS Code may use its older Local runtime; run `npx skarp-copilot setup --project` in your project and reload VS Code.
 
 Copilot asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message. skarp's grade shows under the reply as a "Warning from Stop hook".
 
-To update, run `npx skarp@latest setup`. To remove, run `npx skarp remove`. For how Copilot differs from Claude Code, see the [plugin README](plugin/skarp/README.md#github-copilot-in-vs-code-experimental).
+To update, run `npx skarp-copilot@latest setup`. To remove, run `npx skarp-copilot remove`. For how Copilot differs from Claude Code, see the [plugin README](plugin/skarp/README.md#github-copilot-in-vs-code-experimental).
 
 ## Your data
 
@@ -206,7 +206,7 @@ This is a preview, and your feedback shapes what comes next. Open an [issue](htt
 | `packages/core` | Sessions, the agent loop and ports; `handle(message) -> messages` |
 | `packages/rpc` | JSON-RPC over stdio (planned) |
 | `packages/ui` | React + Tailwind kit, design tokens and Storybook |
-| `packages/cli` | `npx skarp`: Copilot setup, status and remove (published to npm as `skarp`) |
+| `packages/cli` | `npx skarp-copilot`: Copilot setup, status and remove (published to npm as `skarp-copilot`) |
 | `packages/vscode` | The VS Code extension (in progress, not released) |
 | `packages/conformance` | A test suite that drives `core` through a scripted host |
 | `assets/` | Brand marks |
