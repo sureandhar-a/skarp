@@ -3,7 +3,15 @@
 // on its own failure (framework rule 17): any error means exit 0 with no output.
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { toLedgerLine } from "@skarp/core";
@@ -18,18 +26,33 @@ import {
   overlap,
   rungFor,
   tokens,
+  wantsBrainstorm,
   wantsExplain,
 } from "@skarp/kernel";
 import {
+  BS_DECIDE,
+  BS_HINTS,
+  BS_QUESTION,
   BUILD_IT,
+  brainstormFixes,
+  brainstormRules,
+  brainstormSummary,
+  DECIDE,
+  DONE_LISTING,
   EXPLAIN_BACK,
   EXPLAIN_HINTS,
   EXPLAIN_QUESTION,
   EXPLAIN_REPORT,
   explainRules,
+  highStakes,
+  type MapEvent,
   type Mode,
+  type Phase,
+  parseMap,
+  RESUME,
   type ReportShape,
   TASK_REPORT,
+  UNLOCK,
 } from "./modes.ts";
 
 export type Level = "beginner" | "intermediate" | "advanced";
@@ -50,6 +73,19 @@ interface Session {
   seen?: string[]; // events whose field names are logged already
   mode?: Mode; // what the open work is: a task, an explanation or a brainstorm
   explainBack?: boolean; // an explanation ended with skarp's "this works because ___"
+  bs?: Brainstorm; // the open brainstorm
+  lastDecision?: string; // the last brainstorm's decision: "build it" starts it as a task
+}
+
+interface Brainstorm {
+  id: string;
+  topic: string;
+  phase: Phase;
+  stakes: boolean;
+  unlocked: boolean; // the user asked for the AI's ideas first
+  said: string[]; // the user's own words, for quotes
+  ideas: number;
+  whyAsked?: boolean;
 }
 
 export const CAP = 3; // limit: one slice size for everyone; per-task caps when asked
@@ -230,8 +266,9 @@ export function handle(input: HookInput, home: string): object | undefined {
     if (s.explainBack && !s.asking) {
       s.explainBack = false;
       save();
-      const fresh = classifyMessage(prompt) === "task" || wantsExplain(prompt);
-      if (!fresh && !/^(skip|not yet)\b/i.test(said)) {
+      const isNew =
+        classifyMessage(prompt) === "task" || wantsExplain(prompt) || wantsBrainstorm(prompt);
+      if (!isNew && !/^(skip|not yet)\b/i.test(said)) {
         log("explain_back", { text: prompt });
         return context(
           `The user answered skarp's "${EXPLAIN_BACK}": ${prompt}\nIn one or two lines, say what in their answer matches the code and what is missing, citing files. No praise.`,
@@ -263,6 +300,11 @@ export function handle(input: HookInput, home: string): object | undefined {
         answer: skipped ? undefined : answer,
         sentBack: false,
       });
+      if (s.mode === "brainstorm" && s.bs) {
+        const note = brainstormTurn(s, s.bs, skipped ? "your ideas first" : answer, home, log);
+        save();
+        return context(note);
+      }
       save();
       return context(
         `${skipped ? "The user skipped skarp's question." : `The user's answer to skarp's question "${asked.question}": ${answer}`}\n${s.mode === "explain" ? "Now explain" : "Now do the user's task"}: ${s.task}\n${rulesFor(s, lvl ?? profile.level ?? "intermediate")}`,
@@ -273,6 +315,64 @@ export function handle(input: HookInput, home: string): object | undefined {
     save();
     log("user_message", { text: prompt });
     const askLevel = !profile.level && !level;
+    // an open brainstorm: every message is part of it until a decision, or "actually / new task"
+    if (s.mode === "brainstorm" && s.bs) {
+      if (!REPLACES.test(said) && !/^end (the )?brainstorm\b/i.test(said)) {
+        const note = brainstormTurn(s, s.bs, prompt, home, log);
+        save();
+        return context(note);
+      }
+      closeBrainstorm(s, s.bs, home, log);
+      save();
+    }
+    // "build it" after a brainstorm: its decision is the plan, so skarp doesn't ask twice
+    if (s.lastDecision && BUILD_IT.test(said)) {
+      const decision = s.lastDecision;
+      Object.assign(s, fresh(`Build the brainstorm's decision: ${decision}`, "task"), {
+        answer: decision,
+        block: "brainstorm",
+        lastDecision: undefined,
+      });
+      log("answer", { block: "brainstorm", text: decision, via: "decision" });
+      save();
+      return context(
+        `${owed}The user wants the brainstorm's decision built: ${decision}\n${rulesFor(s, level ?? profile.level ?? "intermediate")}`,
+      );
+    }
+    // brainstorm: your idea first, then a senior's questions; the process, ideas and outcome are kept
+    if (wantsBrainstorm(prompt) || RESUME.test(said)) {
+      const resumed = RESUME.test(said) ? lastBrainstorm(home, prompt) : undefined;
+      Object.assign(s, fresh(prompt, "brainstorm"), { reportDue: false });
+      const bs: Brainstorm = {
+        id: randomUUID().slice(0, 8),
+        topic: prompt.slice(0, 120),
+        phase: resumed ? "stress" : "you-first",
+        stakes: highStakes(prompt),
+        unlocked: false,
+        said: [],
+        ideas: resumed?.ideas ?? 0,
+      };
+      s.bs = bs;
+      bsLog(home, bs, { kind: "start", text: prompt, resumed: resumed?.path });
+      log("brainstorm_start", { id: bs.id, resumed: resumed?.path });
+      // the idea may come with the request: "I have a rough idea: move the queue to Redis"
+      if (resumed || IDEA_IN.test(prompt)) {
+        const note = resumed
+          ? `skarp: this continues an earlier brainstorm. Its record:\n${resumed.md}`
+          : brainstormTurn(s, bs, prompt, home, log);
+        save();
+        return context(
+          `${owed}${resumed ? `${note}\n${brainstormRules("stress", bs.stakes)}` : note}`,
+        );
+      }
+      s.asking = { block: "BS1", question: BS_QUESTION, level: false };
+      s.block = "BS1";
+      log("ask", { block: "BS1", reason: "brainstorm: your idea first" });
+      save();
+      return context(
+        `${owed}${askRule(BS_QUESTION, "skarp asks for your own idea before the AI's.", hintRule(BS_HINTS), false)}${brainstormRules("you-first", bs.stakes)}`,
+      );
+    }
     // explain: your guess first, then a checked explanation; no files change
     if (wantsExplain(prompt) && !BUILD_IT.test(said)) {
       Object.assign(s, fresh(prompt, "explain"), {
@@ -346,14 +446,22 @@ export function handle(input: HookInput, home: string): object | undefined {
       log("answer", { block: asked.block, text: commit });
     }
     s.asking = undefined;
+    if (s.mode === "brainstorm" && s.bs) {
+      const note = brainstormTurn(s, s.bs, s.answer ?? "your ideas first", home, log);
+      save();
+      return {
+        additionalContext: note,
+        hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: note },
+      };
+    }
     save();
     return undefined;
   }
 
   const files = event === "PreToolUse" ? writtenFiles(input) : [];
-  if (files.length && s.reportDue && s.mode === "explain")
+  if (files.length && ((s.reportDue && s.mode === "explain") || s.mode === "brainstorm"))
     return deny(
-      "skarp: explain mode changes no files. Finish the explanation; if the user wants a change, they say 'build it' and it becomes a task.",
+      `skarp: ${s.mode} mode changes no files. Finish the ${s.mode === "explain" ? "explanation" : "brainstorm"}; if the user wants a change, they say 'build it' and it becomes a task.`,
     );
   if (files.length) {
     // a write the classifier didn't call a task: it still gets the cap, grade and report
@@ -417,7 +525,35 @@ export function handle(input: HookInput, home: string): object | undefined {
     return undefined;
   }
 
-  if (event === "Stop" && s.reportDue) {
+  if (event === "Stop" && s.mode === "brainstorm" && s.bs && !s.asking) {
+    const bs = s.bs;
+    const reply = input.last_assistant_message ?? lastAssistantText(input.transcript_path);
+    if (reply === undefined) {
+      log("referee", { check: "brainstorm", not_run: "no reply text on this surface" });
+      return undefined;
+    }
+    const fixes = brainstormFixes(reply, bs.phase, bs.said, bs.stakes, bs.unlocked);
+    if (MORE_PRAISE.test(reply)) fixes.push(REPORT_FAILS.praise ?? "");
+    log("referee", { check: "brainstorm", phase: bs.phase, fixes });
+    if (fixes.length && !s.sentBack && !input.stop_hook_active) {
+      s.sentBack = true;
+      save();
+      return {
+        decision: "block",
+        reason: `skarp brainstorm check:\n- ${fixes.join("\n- ")}\n${brainstormRules(bs.phase, bs.stakes)}`,
+      };
+    }
+    // the turn as it stands goes on the record; ideas the AI raised stay marked as its own
+    bsLog(home, bs, { kind: "turn", role: "ai", text: reply });
+    for (const e of parseMap(reply)) {
+      if (e.type === "idea" && e.by === "ai") bs.ideas++;
+      if (!(e.type === "idea" && e.by === "you")) bsLog(home, bs, { kind: "map", ...e });
+    }
+    save();
+    return undefined;
+  }
+
+  if (event === "Stop" && (s.reportDue || s.asking)) {
     if (s.asking) {
       if (!s.sentBack && !input.stop_hook_active) {
         s.sentBack = true;
@@ -507,6 +643,151 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
   }
   return undefined;
+}
+
+// a request that already carries the user's idea
+const IDEA_IN =
+  /\b(idea|plan|thought|approach)\b\s*(is|was|:|-|–)\s*\S|\bwhat if we\b|\bi (think|want) (we|to)\b/i;
+const REASON = /\b(because|since|so that|as it|as we|due to|which means|otherwise)\b/i;
+
+const bsDir = (home: string, id: string) => join(home, "brainstorms", id);
+
+// The brainstorm's own log, append-only, written by the hook: the process, ideas and outcome.
+function bsLog(home: string, bs: Brainstorm, event: object) {
+  try {
+    mkdirSync(bsDir(home, bs.id), { recursive: true, mode: 0o700 });
+    appendFileSync(
+      join(bsDir(home, bs.id), "log.jsonl"),
+      `${JSON.stringify({ time: new Date().toISOString(), ...event })}\n`,
+      { mode: 0o600 },
+    );
+  } catch {}
+}
+
+// One message from the user inside a brainstorm: move the phase on, record what they said,
+// and return what the AI is told for this turn.
+function brainstormTurn(
+  s: Session,
+  bs: Brainstorm,
+  text: string,
+  home: string,
+  log: (type: string, payload: object) => void,
+): string {
+  const idea = () => {
+    bs.ideas++;
+    bsLog(home, bs, { kind: "map", type: "idea", idea: `I${bs.ideas}`, by: "you", text });
+    return `The user's idea, I${bs.ideas} (you): "${text}". Record it in the map.`;
+  };
+  bs.said.push(text);
+  s.sentBack = false;
+  bsLog(home, bs, { kind: "turn", role: "you", text });
+  bs.stakes ||= highStakes(text);
+  let note = "";
+  if (bs.phase === "you-first") {
+    if (UNLOCK.test(text) || /^(skip|not yet)\b/i.test(text.trim())) {
+      bs.unlocked = true;
+      bs.phase = "stress";
+      log("answer_skipped", { block: "BS1", reason: "asked for the AI's ideas first" });
+      note =
+        "The user asked for your ideas first (skarp logs it). Offer 2-3 clearly different directions, labelled (ai) in the map, then ask which fits their situation.";
+    } else {
+      bs.phase = "listing";
+      note = `${idea()} Now ask: "Anything else? Say done when you have listed them."`;
+    }
+  } else if (bs.phase === "listing") {
+    if (DONE_LISTING.test(text.trim())) {
+      bs.phase = "stress";
+      note = "The user has listed their ideas. Start the stress test: one question at a time.";
+    } else note = `${idea()} Ask: "Anything else? Say done when you have listed them."`;
+  } else if (bs.phase === "stress") {
+    if (DECIDE.test(text) || BUILD_IT.test(text.trim())) {
+      if (bs.ideas < 2) {
+        note =
+          "The user wants to decide, but a decision needs at least two options. Ask for one more option, or whether doing nothing is the rival.";
+      } else if (REASON.test(text) && !BUILD_IT.test(text.trim())) {
+        return decide(s, bs, text, text, home, log);
+      } else {
+        bs.phase = "decide";
+        note = `The user wants to decide. Ask exactly: "${BS_DECIDE}"`;
+      }
+    } else note = "Go on with the stress test: one question at a time.";
+  } else {
+    // decide: the user's own words are the decision; a reason is required
+    if (bs.whyAsked) return decide(s, bs, bs.said.at(-2) ?? text, text, home, log);
+    if (!REASON.test(text) && text.split(/\s+/).length < 8) {
+      bs.whyAsked = true;
+      note = 'The user picked without a reason. Ask: "Why that one, in your own words?"';
+    } else return decide(s, bs, text, text, home, log);
+  }
+  return `${note}\n${brainstormRules(bs.phase, bs.stakes)}`;
+}
+
+// The outcome: the user's pick and their why, kept with the rivals; then the brainstorm closes.
+function decide(
+  s: Session,
+  bs: Brainstorm,
+  chosen: string,
+  why: string,
+  home: string,
+  log: (type: string, payload: object) => void,
+): string {
+  bsLog(home, bs, { kind: "decision", chosen, why });
+  const path = closeBrainstorm(s, bs, home, log, chosen, why);
+  s.lastDecision = chosen;
+  return `skarp recorded the user's decision: "${chosen}"${why !== chosen ? `, because "${why}"` : ""}. The brainstorm is closed${path ? ` and saved to ${path}` : ""}. In two lines: restate the decision and the main open question, and tell the user that "build it" starts it as a task. No praise.`;
+}
+
+function closeBrainstorm(
+  s: Session,
+  bs: Brainstorm,
+  home: string,
+  log: (type: string, payload: object) => void,
+  chosen?: string,
+  why?: string,
+): string | undefined {
+  let path: string | undefined;
+  try {
+    const events = readFileSync(join(bsDir(home, bs.id), "log.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as MapEvent & { kind?: string });
+    const sum = brainstormSummary(bs.topic, events);
+    path = join(bsDir(home, bs.id), "summary.md");
+    writeFileSync(path, sum.md, { mode: 0o600 });
+    log("brainstorm", {
+      id: bs.id,
+      topic: bs.topic,
+      decision: chosen,
+      why,
+      path,
+      ideas_by_you: sum.byYou,
+      ideas_by_ai: sum.byAi,
+      coverage: sum.coverage,
+    });
+  } catch {}
+  Object.assign(s, { mode: undefined, bs: undefined, reportDue: false });
+  return path;
+}
+
+// The latest saved brainstorm that shares a word with the request.
+function lastBrainstorm(
+  home: string,
+  prompt: string,
+): { md: string; path: string; ideas: number } | undefined {
+  try {
+    const dir = join(home, "brainstorms");
+    const words = new Set(tokens(prompt));
+    const found = readdirSync(dir)
+      .map((id) => join(dir, id, "summary.md"))
+      .filter((p) => existsSync(p))
+      .map((p) => ({ p, md: readFileSync(p, "utf8"), t: statSync(p).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+      .find((x) => tokens(x.md.split("\n")[0] ?? "").some((w) => words.has(w)));
+    if (!found) return undefined;
+    return { md: found.md, path: found.p, ideas: (found.md.match(/^- \*\*I\d+/gm) ?? []).length };
+  } catch {
+    return undefined;
+  }
 }
 
 // The state a new piece of work starts from.
@@ -723,6 +1004,7 @@ export function standingRules(level: Level): string {
     "When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
     reportRules(level),
     `When the user asks you to explain code (no change), use the explain report instead:\n${explainRules()}`,
+    `When the user wants to brainstorm, skarp asks for their idea first, then you follow these rules every turn:\n${brainstormRules("you-first", false)}`,
   ].join("\n");
 }
 

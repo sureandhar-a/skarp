@@ -514,3 +514,83 @@ test("explain: the guess is quoted in the rules; a new task after it starts fres
   assert.match(next.hookSpecificOutput.additionalContext, /AskUserQuestion/);
   assert.match(next.hookSpecificOutput.additionalContext, /## skarp: what changed/);
 });
+
+test("brainstorm: your idea first, quiet while listing, stress, then a decision with your why, all recorded", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
+  const on = (event: string, extra: object = {}): any =>
+    handle({ session_id: "b1", cwd, hook_event_name: event, ...extra }, home);
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  const start = on("UserPromptSubmit", { prompt: "can we brainstorm on caching the user API?" });
+  assert.match(ctx(start), /what's your idea or first guess/);
+  assert.match(ctx(start), /"I'll type my idea", "Your ideas first"/);
+  assert.match(ctx(start), /Do not suggest ideas/);
+  // the card answer is the user's first idea
+  const first = on("PostToolUse", {
+    tool_name: "AskUserQuestion",
+    tool_response: { answers: { q: "cache per user in memory" } },
+  });
+  assert.match(first.hookSpecificOutput.additionalContext, /I1 \(you\)/);
+  // listing: a verdict is sent back
+  const listMap = "### skarp map\n- verdict I1: risky, stale";
+  assert.match(
+    on("Stop", { last_assistant_message: `Noted.\n${listMap}` }).reason,
+    /still listing/,
+  );
+  on("Stop", {
+    last_assistant_message: "Noted. Anything else?\n### skarp map\n- open: size",
+    stop_hook_active: true,
+  });
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "or a redis cache shared by all servers" })),
+    /I2 \(you\)/,
+  );
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "done" })), /Phase: stress test/);
+  // writes are refused during a brainstorm
+  const w = on("PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: "/p/a.ts", content: "x" },
+  });
+  assert.match(w.hookSpecificOutput.permissionDecisionReason, /brainstorm mode changes no files/);
+  on("Stop", {
+    last_assistant_message:
+      'Restated: Would a shared Redis cache keep data fresh?\n### Question\nYou said "shared by all servers": how is it invalidated?\n### skarp map\n- verdict I2: unknown, no invalidation yet\n- question failure: "shared by all servers"',
+  });
+  // deciding with a reason closes and saves it
+  const done = on("UserPromptSubmit", {
+    prompt: "let's go with redis because every server needs the same data",
+  });
+  assert.match(ctx(done), /recorded the user's decision/);
+  const ledger = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const bs = ledger.find((l) => l.type === "brainstorm");
+  assert.equal(bs.payload.ideas_by_you, 2);
+  assert.equal(bs.payload.coverage, 1);
+  const md = readFileSync(bs.payload.path, "utf8");
+  assert.match(md, /because every server needs the same data/);
+  assert.match(md, /verdict: unknown/);
+  // "build it" starts the decision as a task without asking again
+  const build = on("UserPromptSubmit", { prompt: "build it" });
+  assert.doesNotMatch(ctx(build), /AskUserQuestion/);
+  assert.match(ctx(build), /## skarp: what changed/);
+  // a later "continue the brainstorm" brings the saved record back
+  const resumed = on("UserPromptSubmit", { prompt: "continue the brainstorm on caching" });
+  assert.match(ctx(resumed), /continues an earlier brainstorm/);
+  assert.match(ctx(resumed), /because every server needs the same data/);
+});
+
+test("brainstorm: an idea in the request skips the question; deciding needs two options and a why", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  const start = on("UserPromptSubmit", {
+    prompt: "I have a rough idea: move the job queue to postgres. can we brainstorm?",
+  });
+  assert.match(ctx(start), /I1 \(you\)/);
+  on("UserPromptSubmit", { prompt: "done" });
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "let's decide" })), /at least two options/);
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "your ideas please" })), /stress test/);
+});
