@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -433,4 +433,45 @@ test("Copilot CLI harness: tool_result answers, exit code in Bash text, events.j
     moved.map((f) => f.path),
     ["a.js", "b.js"],
   );
+});
+
+test("Copilot hooks reference: camelCase events, transcriptPath and toolResult are read", () => {
+  const n = normalize(
+    { sessionId: "c1", transcriptPath: "/t.jsonl", toolResult: "ok" },
+    "agentStop",
+  );
+  assert.equal(n.hook_event_name, "Stop");
+  assert.equal(n.transcript_path, "/t.jsonl");
+  assert.equal(n.tool_response, "ok");
+  assert.equal(
+    normalize({ hookEventName: "userPromptSubmitted" }).hook_event_name,
+    "UserPromptSubmit",
+  );
+});
+
+test("SessionStart gives the standing rules in both output shapes", () => {
+  const out = session().on("SessionStart");
+  assert.match(out.additionalContext, /## skarp: what changed/);
+  assert.equal(out.hookSpecificOutput.additionalContext, out.additionalContext);
+});
+
+test("a checked report is saved as a file; ledger lines carry the project and task, and field names only", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
+  const on = (event: string, extra: object = {}): any =>
+    handle(normalize({ sessionId: "r1", cwd, hookEventName: event, secret: "x", ...extra }), home);
+  on("userPromptSubmitted", { prompt: "add a logger to src/a.ts" });
+  answer(on, "Skip");
+  on("agentStop", { last_assistant_message: report() });
+  const lines = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const saved = lines.find((l) => l.type === "report");
+  assert.match(readFileSync(saved.payload.path, "utf8"), /^## skarp: what changed/);
+  assert.ok(lines.every((l) => l.payload.cwd === cwd));
+  assert.ok(lines.find((l) => l.type === "ask").payload.task_id);
+  const seen = lines.find((l) => l.type === "seen");
+  assert.ok(seen.payload.fields.includes("secret"));
+  assert.ok(!JSON.stringify(seen).includes('"x"'));
 });

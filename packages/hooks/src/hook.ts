@@ -1,6 +1,8 @@
 // skarp as a Claude Code plugin: one short process per hook event. It reads the event on stdin,
 // keeps per-session state in ~/.skarp, and prints Claude Code's answer. It never blocks the agent
 // on its own failure (framework rule 17): any error means exit 0 with no output.
+
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -32,6 +34,8 @@ interface Session {
   reportDue: boolean; // a task ran this turn, so the report is owed at Stop
   sentBack: boolean; // Stop already sent the AI back once this turn
   explainOwed: boolean; // the last task ended without a passing report
+  id?: string; // the running task's id, on its ledger lines
+  seen?: string[]; // events whose field names are logged already
 }
 
 export const CAP = 3; // limit: one slice size for everyone; per-task caps when asked
@@ -167,6 +171,7 @@ export interface HookInput {
   last_assistant_message?: string;
   transcript_path?: string;
   stop_hook_active?: boolean;
+  raw?: Record<string, unknown>; // the agent's own input, for its field names
 }
 
 export function handle(input: HookInput, home: string): object | undefined {
@@ -184,15 +189,25 @@ export function handle(input: HookInput, home: string): object | undefined {
     // sync, so lines land in order; best effort, a failed write never stops the agent
     try {
       mkdirSync(join(home, "ledger"), { recursive: true, mode: 0o700 });
+      const where = { cwd: input.cwd, task_id: s.id };
       appendFileSync(
         join(home, "ledger", "hooks.jsonl"),
-        `${toLedgerLine({ now: () => new Date() }, type as never, sid, payload)}\n`,
+        `${toLedgerLine({ now: () => new Date() }, type as never, sid, { ...payload, ...where })}\n`,
         { mode: 0o600 },
       );
     } catch {}
   };
   const save = () => write(file, s);
   const event = input.hook_event_name ?? "";
+  // field names only, never values, once per event: shows what an agent really sends
+  if (!s.seen?.includes(event)) {
+    s.seen = [...(s.seen ?? []), event];
+    log("seen", { event, fields: Object.keys(input.raw ?? input).sort() });
+    save();
+  }
+
+  // Copilot drops what a prompt hook returns, so the standing rules go in once per session
+  if (event === "SessionStart") return startContext(standingRules(profile.level ?? "intermediate"));
   const setLevel = (level: Level) => write(join(home, "profile.json"), { ...profile, level });
 
   if (event === "UserPromptSubmit") {
@@ -250,6 +265,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
     // a task: the report is owed at Stop, whether skarp asks first or stays quiet (faded)
     Object.assign(s, {
+      id: randomUUID().slice(0, 8),
       task: prompt,
       answer: undefined,
       block: undefined,
@@ -409,6 +425,7 @@ export function handle(input: HookInput, home: string): object | undefined {
         ].join("\n"),
       };
     }
+    saveReport(home, "task", reply, log);
     const shape = reportFixes(reply);
     const failed = new Set(
       checkReply(reply, undefined, [], {
@@ -443,6 +460,7 @@ export function handle(input: HookInput, home: string): object | undefined {
   if (event === "Stop" && s.explainOwed) {
     const reply = input.last_assistant_message ?? lastAssistantText(input.transcript_path);
     if (reply !== undefined && !reportFixes(reply).length) {
+      saveReport(home, "task", reply, log);
       s.explainOwed = false;
       save();
       return { systemMessage: "skarp: owed report checked." };
@@ -543,6 +561,16 @@ function shellWrites(cmd: string, rel: (p: string) => string): { path: string; c
 
 // VS Code's Copilot harness sends camelCase and may leave the event name out: the hooks
 // file then passes it on the command line.
+// Copilot's camelCase event names; it also accepts the PascalCase ones skarp's files use
+const EVENTS: Record<string, string> = {
+  sessionStart: "SessionStart",
+  userPromptSubmitted: "UserPromptSubmit",
+  preToolUse: "PreToolUse",
+  postToolUse: "PostToolUse",
+  postToolUseFailure: "PostToolUseFailure",
+  agentStop: "Stop",
+};
+
 export function normalize(raw: Record<string, unknown>, event?: string): HookInput {
   let args = raw.tool_input ?? raw.toolArgs;
   if (typeof args === "string") {
@@ -555,10 +583,15 @@ export function normalize(raw: Record<string, unknown>, event?: string): HookInp
   return {
     ...raw,
     session_id: (raw.session_id ?? raw.sessionId) as string | undefined,
-    hook_event_name: (raw.hook_event_name ?? raw.hookEventName ?? event) as string | undefined,
+    hook_event_name: ((n) => EVENTS[n] ?? n)(
+      String(raw.hook_event_name ?? raw.hookEventName ?? event ?? ""),
+    ),
     tool_name: (raw.tool_name ?? raw.toolName) as string | undefined,
     tool_input: args as HookInput["tool_input"],
-    tool_response: raw.tool_response ?? raw.tool_result, // Copilot CLI harness: tool_result
+    // Copilot CLI harness: tool_result; Copilot's hooks reference: toolResult
+    tool_response: raw.tool_response ?? raw.tool_result ?? raw.toolResult,
+    transcript_path: (raw.transcript_path ?? raw.transcriptPath) as string | undefined,
+    raw,
   };
 }
 
@@ -613,6 +646,45 @@ export function askRule(question: string, reason: string, brief: string, level: 
   ]
     .filter(Boolean)
     .join("\n")}\n`;
+}
+
+// What skarp tells the AI once per session; each turn's rules still ride on the hooks that
+// Copilot honors (deny reasons, the Stop send-back)
+export function standingRules(level: Level): string {
+  return [
+    "skarp is on in this session. It checks your work with hooks; follow its rules when they appear.",
+    "When the user gives a task, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
+    reportRules(level),
+  ].join("\n");
+}
+
+function startContext(text: string) {
+  // both shapes: hookSpecificOutput for Claude Code, top-level for Copilot
+  return {
+    additionalContext: text,
+    hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
+  };
+}
+
+// The report part of a reply, saved as its own file and pointed to from the ledger.
+function saveReport(
+  home: string,
+  kind: string,
+  reply: string,
+  log: (type: string, payload: object) => void,
+) {
+  const at = reply.indexOf("## skarp:");
+  if (at < 0) return;
+  try {
+    const dir = join(home, "reports");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(
+      dir,
+      `${new Date().toISOString().slice(0, 10)}-${kind}-${randomUUID().slice(0, 8)}.md`,
+    );
+    writeFileSync(path, `${reply.slice(at).trim()}\n`, { mode: 0o600 });
+    log("report", { kind, path });
+  } catch {}
 }
 
 function context(text: string) {
