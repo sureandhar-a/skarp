@@ -1,6 +1,6 @@
 {
   "name": "skarp-copilot",
-  "version": "0.2.0-preview",
+  "version": "0.2.0-preview.1",
   "description": "skarp for GitHub Copilot: one command sets up the hooks that ask for your view first, check the AI's work and keep a local record.",
   "license": "MIT",
   "author": "sureandhar",
