@@ -107,7 +107,9 @@ const WRITES = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 // a test runner at the start of a command or after && / || / ; (not "cat cart.test.js")
 const TEST_RUN =
   /(?:^|&&|\|\||;)\s*(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha)\b|(?:vitest|jest|mocha|pytest|rspec|phpunit)\b|python3?\s+-m\s+(?:pytest|unittest)\b|node\s+--test\b|(?:go|cargo|deno|dotnet|make)\s+test\b)/;
-const PIPED = /(^|[^|])\|([^|]|$)/; // `npm test | tail` exits 0 even when tests fail
+// after the test runner, `| tail`, `; echo` or `|| true` set the exit code, not the tests;
+// `&& next` doesn't, since it only runs when the tests passed
+const HIDES_EXIT = /;|\|/;
 // praise the kernel's list misses
 const MORE_PRAISE =
   /\b(nice (idea|work|job|plan)|awesome|amazing|you nailed it|great (job|work|idea|plan|choice))\b/i;
@@ -539,7 +541,8 @@ export function handle(input: HookInput, home: string): object | undefined {
             : input.tool_name === "Bash"
               ? true
               : undefined;
-      if (PIPED.test(cmd) && !/pipefail/.test(cmd) && passed) passed = undefined; // the pipe's exit, not the tests'
+      const after = cmd.slice((cmd.match(TEST_RUN)?.index ?? 0) + 1);
+      if (passed && HIDES_EXIT.test(after) && !/pipefail/.test(cmd)) passed = undefined;
       s.testsPassed = passed;
       log("run", { command: cmd, passed: passed ?? "unknown" });
     }

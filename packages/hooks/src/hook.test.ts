@@ -317,6 +317,9 @@ test("only a test runner counts; a pipe or a Copilot nonzero exit is not a pass"
   assert.equal(run("Bash", "cat cart.test.js"), "block");
   assert.equal(run("Bash", "npm test | tail -5"), "block");
   assert.equal(run("Bash", "cd app && npm test"), undefined);
+  assert.equal(run("Bash", "npm test; echo exit=$?"), "block");
+  assert.equal(run("Bash", "npm test || true"), "block");
+  assert.equal(run("Bash", "npm test && echo ok"), undefined);
   assert.equal(
     run("run_in_terminal", "npm test", "1 failing\nCommand exited with exit code 1"),
     "block",
