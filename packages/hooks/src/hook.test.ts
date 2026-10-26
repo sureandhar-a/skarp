@@ -744,3 +744,66 @@ test("brainstorm: a hard-to-undo pick with a reason gets the pre-mortem before i
     /recorded the user's decision: "let's go with cents because floats drift"/,
   );
 });
+
+test("Copilot: ask_user is the question tool, its answer is read, and a replayed send-back is not the user's", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
+  const cop = (event: string, raw: object): any =>
+    handle(normalize({ sessionId: "c1", cwd, ...raw }, event), home);
+  cop("userPromptSubmitted", { prompt: "create hello.js that prints hello world" });
+  const q = "Which part of the code do you expect this change to touch?";
+  const guessed = cop("preToolUse", {
+    toolName: "ask_user",
+    toolArgs: {
+      message: q,
+      requestedSchema: { properties: { t: { type: "string", default: "hello.js" } } },
+    },
+  });
+  assert.match(guessed.permissionDecisionReason, /Leave out the default/);
+  // the AI stops without asking: sent back, and Copilot replays the reason as a prompt
+  const back = cop("agentStop", { stopReason: "end_turn", stop_hook_active: false });
+  assert.equal(back.decision, "block");
+  assert.equal(cop("userPromptSubmitted", { prompt: back.reason }), undefined);
+  const ok = cop("preToolUse", {
+    toolName: "ask_user",
+    toolArgs: { message: q, requestedSchema: { properties: { t: { type: "string" } } } },
+  });
+  assert.equal(ok, undefined);
+  cop("postToolUse", {
+    toolName: "ask_user",
+    toolArgs: { message: q },
+    toolResult: { textResultForLlm: "User responded: a new hello.js file", resultType: "success" },
+  });
+  const ledger = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8");
+  assert.match(ledger, /"text":"a new hello.js file"/);
+  assert.doesNotMatch(ledger, /"type":"answer"[^\n]*skarp: ask the user/);
+});
+
+test("end checks: options sent back on the second Stop, a test-only bug fix, no 'unbacked' in explanations", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
+  on("Stop", { last_assistant_message: "Which part?" });
+  const own = on("Stop", {
+    last_assistant_message: "Which part?\n- the logger module\n- the config",
+    stop_hook_active: true,
+  });
+  assert.match(own.reason, /as a numbered list: 1\./);
+
+  const bug = session();
+  bug.on("UserPromptSubmit", { prompt: "applyDiscount is broken in cart.js, can you fix it" });
+  answer(bug.on, "cart.js applyDiscount", "A test passes");
+  bug.on("PreToolUse", {
+    tool_name: "Edit",
+    tool_input: { file_path: "/p/cart.test.js", new_string: "0.1" },
+  });
+  assert.match(
+    bug.on("Stop", { last_assistant_message: report() }).reason,
+    /changed only test files/,
+  );
+
+  const ex = session();
+  ex.on("UserPromptSubmit", { prompt: "explain the repo to me" });
+  answer(ex.on, "a cart", "beginner");
+  const end = ex.on("Stop", { last_assistant_message: explained("I've added a diagram above.") });
+  assert.match(end.systemMessage, /explanation checked/);
+});

@@ -295,6 +295,10 @@ const norm = (t: string) =>
 // Whether a question card asks skarp's question with skarp's options. Claude: { questions: [{
 // question, options: [{ label }] }] }; VS Code's shape may differ, so an unreadable card passes.
 export function cardFixes(input: unknown, question: string, hints: string[]): string[] {
+  const ask = input as
+    | { message?: string; requestedSchema?: { properties?: Record<string, unknown> } }
+    | undefined;
+  if (typeof ask?.message === "string") return askUserFixes(ask, question, hints);
   const q = (input as { questions?: unknown[] } | undefined)?.questions?.[0] as
     | { question?: string; options?: ({ label?: string } | string)[] }
     | undefined;
@@ -303,6 +307,28 @@ export function cardFixes(input: unknown, question: string, hints: string[]): st
   if (typeof q.question === "string" && !norm(q.question).includes(norm(question)))
     fixes.push(`Ask skarp's question word for word: "${question}"`);
   const labels = (q.options ?? []).map((o) => (typeof o === "string" ? o : (o.label ?? "")));
+  if (labels.length && !optionsOk(labels, hints))
+    fixes.push(`Use exactly these options: ${[...hints, "Skip"].map((h) => `"${h}"`).join(", ")}.`);
+  return fixes;
+}
+
+// Copilot's ask_user: { message, requestedSchema: { properties: { field: { enum?, default? } } } }.
+// A pre-filled default is the AI's own guess, shown as if it were the user's answer.
+function askUserFixes(
+  ask: { message?: string; requestedSchema?: { properties?: Record<string, unknown> } },
+  question: string,
+  hints: string[],
+): string[] {
+  const fixes: string[] = [];
+  if (!norm(ask.message ?? "").includes(norm(question)))
+    fixes.push(`Ask skarp's question word for word: "${question}"`);
+  const fields = Object.values(ask.requestedSchema?.properties ?? {}) as {
+    enum?: string[];
+    default?: unknown;
+  }[];
+  if (fields.some((f) => f.default !== undefined))
+    fixes.push("Leave out the default answer: the user gives their own.");
+  const labels = fields.flatMap((f) => f.enum ?? []);
   if (labels.length && !optionsOk(labels, hints))
     fixes.push(`Use exactly these options: ${[...hints, "Skip"].map((h) => `"${h}"`).join(", ")}.`);
   return fixes;

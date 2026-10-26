@@ -69,6 +69,7 @@ const RISKY_OUT = /\b(except|finally|rollback|release|unlock|close|catch|revert|
 const RISKY_IN = /\b(raise|throw)\b/;
 // a test file: its folder or its name says so
 const TEST_FILE = /(^|\/)(tests?|spec|__tests__)\/|(^|\/)test_[^/]*$|[._-](test|spec)\.\w+$/;
+export const isTestFile = (path: string) => TEST_FILE.test(path);
 const PREVIEW = /(--dry-run|\bexplain\b|\bplan\b|count\(|--check|--diff)/i;
 // a lone read-only command: nothing to predict or break. Any chaining or redirect still gets asked.
 const READ_ONLY =

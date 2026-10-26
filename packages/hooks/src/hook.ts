@@ -21,6 +21,7 @@ import {
   classifyMessage,
   conceptOf,
   decideNextStep,
+  isTestFile,
   matchConcept,
   type Outcome,
   overlap,
@@ -78,6 +79,7 @@ interface Session {
   lastDecision?: string; // the last brainstorm's decision: "build it" starts it as a task
   check?: string; // for a bug: what the user says would show it's fixed
   closing?: boolean; // the user said it's done: the report is due this turn
+  blockReason?: string; // skarp's last Stop send-back: Copilot replays it as a user prompt
 }
 
 interface Brainstorm {
@@ -100,8 +102,10 @@ const DEPTH: Record<Level, string> = {
 };
 export const SECTIONS = TASK_REPORT.sections;
 // what the AI may use while skarp's question waits: the card, and the search that loads it
-// Claude Code's AskUserQuestion, VS Code's askQuestions (vscode/askQuestions, ask_questions)
-const ASK_TOOL = /^AskUserQuestion$|ask_?questions/i;
+// Claude Code's AskUserQuestion, VS Code's askQuestions (vscode/askQuestions, ask_questions),
+// Copilot agent's ask_user (seen 26 Oct, VS Code 1.143)
+const ASK_TOOL = /^AskUserQuestion$|ask_?questions|^ask_?user$/i;
+const ASK_NAMES = "AskUserQuestion in Claude Code, ask_user or askQuestions in VS Code";
 const ASKING_TOOLS = (tool: string) => ASK_TOOL.test(tool) || tool === "ToolSearch";
 const RUNS = /^(Bash|run_in_terminal|runInTerminal)$|terminal/i; // shell tools, Claude and VS Code
 const WRITES = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -119,6 +123,8 @@ const REPORT_FAILS: Record<string, string> = {
   praise: "Remove the praise; state facts only.",
   unbacked_action:
     "You say you added or did something that the changed files don't show. Say only what the changes contain.",
+  test_only:
+    "This bug fix changed only test files. Say plainly whether the bug in the code is still there, and what would fix it in the code.",
   untested_claim:
     "You say tests pass, but skarp saw no passing test run this turn (piping test output, e.g. `| tail`, hides failures). Run the tests plainly, or say they were not run.",
 };
@@ -244,6 +250,12 @@ export function handle(input: HookInput, home: string): object | undefined {
     } catch {}
   };
   const save = () => write(file, s);
+  // send the AI back once; remember the reason, since Copilot feeds it back as a user prompt
+  const sendBack = (reason: string) => {
+    Object.assign(s, { sentBack: true, blockReason: reason });
+    save();
+    return { decision: "block", reason };
+  };
   const event = input.hook_event_name ?? "";
   // field names only, never values, once per event: shows what an agent really sends
   if (!s.seen?.includes(event)) {
@@ -259,6 +271,14 @@ export function handle(input: HookInput, home: string): object | undefined {
   if (event === "UserPromptSubmit") {
     const prompt: string = input.prompt ?? "";
     const said = prompt.trim();
+    // skarp's own send-back, replayed by Copilot as a user message: the AI acts on it, skarp
+    // doesn't take it as the user's words
+    if (s.blockReason && said.startsWith(s.blockReason.trim().slice(0, 60))) {
+      s.blockReason = undefined;
+      save();
+      log("send_back_replayed", {});
+      return undefined;
+    }
     const level = levelIn(prompt);
     if (level) setLevel(level);
     const owed = s.explainOwed
@@ -459,7 +479,7 @@ export function handle(input: HookInput, home: string): object | undefined {
   if (event === "PreToolUse" && s.asking && !ASKING_TOOLS(input.tool_name ?? "")) {
     return deny(
       // the rules ride along: Copilot drops UserPromptSubmit context, so this is all it sees of them
-      `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code): "${s.asking.question}". Nothing else runs until they answer.\nAfter the answer:\n${rulesFor(s, profile.level ?? "intermediate")}`,
+      `skarp: ask the user skarp's question with your question tool first (${ASK_NAMES}): "${s.asking.question}". Nothing else runs until they answer.\nAfter the answer:\n${rulesFor(s, profile.level ?? "intermediate")}`,
     );
   }
 
@@ -571,14 +591,10 @@ export function handle(input: HookInput, home: string): object | undefined {
     const fixes = brainstormFixes(reply, bs.phase, bs.said, bs.stakes, bs.unlocked);
     if (MORE_PRAISE.test(reply)) fixes.push(REPORT_FAILS.praise ?? "");
     log("referee", { check: "brainstorm", phase: bs.phase, fixes });
-    if (fixes.length && !s.sentBack && !input.stop_hook_active) {
-      s.sentBack = true;
-      save();
-      return {
-        decision: "block",
-        reason: `skarp brainstorm check:\n- ${fixes.join("\n- ")}\n${brainstormRules(bs.phase, bs.stakes)}`,
-      };
-    }
+    if (fixes.length && !s.sentBack && !input.stop_hook_active)
+      return sendBack(
+        `skarp brainstorm check:\n- ${fixes.join("\n- ")}\n${brainstormRules(bs.phase, bs.stakes)}`,
+      );
     // the turn as it stands goes on the record; ideas the AI raised stay marked as its own
     bsLog(home, bs, { kind: "turn", role: "ai", text: reply });
     for (const e of parseMap(reply)) {
@@ -591,38 +607,28 @@ export function handle(input: HookInput, home: string): object | undefined {
 
   if (event === "Stop" && (s.reportDue || s.asking)) {
     if (s.asking) {
-      if (!s.sentBack && !input.stop_hook_active) {
-        s.sentBack = true;
-        save();
-        return {
-          decision: "block",
-          reason: `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code; load it with ToolSearch if needed): "${s.asking.question}". If that tool is not available, write the question and its options as text and stop; the user's next message is the answer.`,
-        };
-      }
+      if (!s.sentBack && !input.stop_hook_active)
+        return sendBack(
+          `skarp: ask the user skarp's question with your question tool first (${ASK_NAMES}; load it with ToolSearch if needed, without mentioning that to the user): "${s.asking.question}". If no question tool is available, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.`,
+        );
       // the AI wrote the question as text (no card here); the user's next message answers it,
-      // maybe by number, so keep the numbered options it wrote
-      const options = [
-        ...(input.last_assistant_message ?? "").matchAll(
-          /^\s*(?:[-*]\s*)?\**(\d+)[.)]\**\s*(.+)$/gm,
-        ),
-      ].map((m) => (m[2] ?? "").replace(/\*\*/g, "").trim());
+      // maybe by number, so keep the options it wrote: numbered, else bulleted, in order
+      const text = input.last_assistant_message ?? lastAssistantText(input.transcript_path) ?? "";
+      const listed = (re: RegExp) =>
+        [...text.matchAll(re)].map((m) => (m[1] ?? "").replace(/\*\*/g, "").trim());
+      const numbered = listed(/^\s*(?:[-*]\s*)?\**\d+[.)]\**\s*(.+)$/gm);
+      const options = numbered.length ? numbered : listed(/^\s*[-*•]\s+(.+)$/gm);
       if (options.length) {
         s.asking.options = options;
         save();
       }
       const hints = hintsFor(s.asking.block);
-      if (
-        options.length &&
-        !optionsOk(options, hints) &&
-        !s.asking.fixed &&
-        !input.stop_hook_active
-      ) {
+      // once, even on the Stop that follows the first send-back
+      if (options.length && !optionsOk(options, hints) && !s.asking.fixed) {
         s.asking.fixed = 1;
-        save();
-        return {
-          decision: "block",
-          reason: `skarp: ask skarp's question "${s.asking.question}" with exactly these options, as text: ${[...hints, "Skip"].map((h, i) => `${i + 1}. ${h}`).join(" ")}. Then stop; the user's next message is the answer.`,
-        };
+        return sendBack(
+          `skarp: ask skarp's question "${s.asking.question}" with exactly these options, as a numbered list: ${[...hints, "Skip"].map((h, i) => `${i + 1}. ${h}`).join(" ")}. Then stop; the user's next message is the answer.`,
+        );
       }
       return undefined;
     }
@@ -650,15 +656,10 @@ export function handle(input: HookInput, home: string): object | undefined {
         return undefined;
       }
       if (!s.touched.length) return undefined; // nothing changed yet: nothing is owed
-      if (!s.sentBack && !input.stop_hook_active) {
-        s.sentBack = true;
-        save();
-        return {
-          decision: "block",
-          reason:
-            "skarp: you changed files but gave neither the report nor a status. If the task is done, give the full `## skarp: what changed` report; if not, end with `### skarp: status` (found so far, tried, next step).",
-        };
-      }
+      if (!s.sentBack && !input.stop_hook_active)
+        return sendBack(
+          "skarp: you changed files but gave neither the report nor a status. If the task is done, give the full `## skarp: what changed` report; if not, end with `### skarp: status` (found so far, tried, next step).",
+        );
     }
     saveReport(home, kind, reply, log);
     const shape = reportFixes(reply, kind === "explain" ? EXPLAIN_REPORT : TASK_REPORT);
@@ -670,14 +671,16 @@ export function handle(input: HookInput, home: string): object | undefined {
         testsPassed: s.testsPassed,
       }).filter((f) => f in REPORT_FAILS),
     );
+    // an explanation changes nothing, so "I've added a diagram" is about the reply itself
+    if (kind === "explain") failed.delete("unbacked_action");
     if (MORE_PRAISE.test(reply)) failed.add("praise");
+    // a bug "fixed" by changing only tests may hide it (R21's concern, checked at the end)
+    const paths = s.touched.map((t) => t.path);
+    if (s.block === BUG_BLOCK && paths.length && paths.every(isTestFile)) failed.add("test_only");
     const fixes = [...shape, ...[...failed].map((f) => REPORT_FAILS[f])];
     log("referee", { check: "report", shape, failed: [...failed] });
-    if (fixes.length && !s.sentBack && !input.stop_hook_active) {
-      s.sentBack = true;
-      save();
-      return { decision: "block", reason: `skarp report check:\n- ${fixes.join("\n- ")}` };
-    }
+    if (fixes.length && !s.sentBack && !input.stop_hook_active)
+      return sendBack(`skarp report check:\n- ${fixes.join("\n- ")}`);
 
     const lines = grade(s, sid, log);
     if (kind === "explain")
@@ -1065,8 +1068,9 @@ export function readAnswers(r: unknown): string[] {
       return [v as string]; // plain text is the answer
     }
   }
-  // Copilot CLI harness: { text_result_for_llm: "User responded: X" | "User cancelled the request." }
-  const said = (v as { text_result_for_llm?: unknown } | undefined)?.text_result_for_llm;
+  // Copilot: { text_result_for_llm | textResultForLlm: "User responded: X" | "User cancelled the request." }
+  const c = v as { text_result_for_llm?: unknown; textResultForLlm?: unknown } | undefined;
+  const said = c?.text_result_for_llm ?? c?.textResultForLlm;
   if (typeof said === "string")
     return /cancelled/i.test(said) ? ["Skip"] : [said.replace(/^User responded:\s*/i, "")];
   const all = (v as { answers?: Record<string, unknown> } | undefined)?.answers;
@@ -1101,7 +1105,7 @@ export function askRule(
   check = false,
 ): string {
   return `${[
-    "skarp rule, before anything else: ask the user with your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), so they get a question card.",
+    `skarp rule, before anything else: ask the user with your question tool (${ASK_NAMES}), so they get a question card.`,
     `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
     check
       ? 'Question 2, header "Check": "What would show it\'s fixed?" with options "A test passes", "I\'ll try it by hand", "Not sure"; the user can also type their own.'
@@ -1109,7 +1113,7 @@ export function askRule(
     level
       ? `Question ${check ? 3 : 2}, header "Level": "Your level, so skarp's explanations fit you?" with options "beginner", "intermediate", "advanced".`
       : "",
-    "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and options as text and stop; the user's next message is the answer.",
+    "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.",
     "Do not read files, run commands or start the work until the user answers; skarp refuses other tools until then. After the answer, do what the user asked.",
   ]
     .filter(Boolean)
@@ -1121,7 +1125,7 @@ export function askRule(
 export function standingRules(level: Level): string {
   return [
     "skarp is on in this session. It checks your work with hooks; follow its rules when they appear.",
-    "When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
+    `When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (${ASK_NAMES}), or write it as a numbered list and stop.`,
     reportRules(level),
     `When the user asks you to explain code (no change), use the explain report instead:\n${explainRules()}`,
     `When the user wants to brainstorm, skarp asks for their idea first, then you follow these rules every turn:\n${brainstormRules("you-first", false)}`,
