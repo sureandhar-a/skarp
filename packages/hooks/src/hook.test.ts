@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-  CAP,
   handle,
   levelAnswer,
   levelIn,
@@ -81,18 +80,19 @@ test("chat is not held", () => {
   assert.equal(session().on("UserPromptSubmit", { prompt: "thanks" }), undefined);
 });
 
-test("writes past the slice cap are refused; the same file again is not", () => {
+test("no file cap: ten files are written, none refused, and all are graded", () => {
   const { on } = session();
-  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
-  answer(on, "Skip");
-  const write = (f: string) =>
-    on("PreToolUse", {
-      tool_name: "Write",
-      tool_input: { file_path: `${cwd}/${f}`, content: "x" },
-    });
-  for (let i = 0; i < CAP; i++) assert.equal(write(`f${i}.ts`), undefined);
-  assert.equal(write("f0.ts"), undefined);
-  assert.equal(write("extra.ts").hookSpecificOutput.permissionDecision, "deny");
+  on("UserPromptSubmit", { prompt: "rename foo to bar across the app" });
+  answer(on, "f0.ts to f9.ts");
+  for (let i = 0; i < 10; i++)
+    assert.equal(
+      on("PreToolUse", {
+        tool_name: "Write",
+        tool_input: { file_path: `${cwd}/f${i}.ts`, content: "bar" },
+      }),
+      undefined,
+    );
+  assert.match(on("Stop", { last_assistant_message: report() }).systemMessage, /10 files/);
 });
 
 test("Stop sends the AI back once for a missing section, then lets it finish", () => {
@@ -152,7 +152,7 @@ test("shell writes (>, >>, tee) are counted; quotes, heredoc bodies, fd redirect
   assert.deepEqual(files("git status"), []);
 });
 
-test("a shell write is graded and capped like a file tool write", () => {
+test("a shell write is graded like a file tool write", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "create hello.js that prints hello world" });
   answer(on, "a new hello.js");
@@ -162,14 +162,6 @@ test("a shell write is graded and capped like a file tool write", () => {
   });
   const out = on("Stop", { last_assistant_message: report() });
   assert.match(out.systemMessage, /matched/);
-  const capped = session();
-  capped.on("UserPromptSubmit", { prompt: "create four files" });
-  answer(capped.on, "a, b, c and d");
-  const denied = capped.on("PreToolUse", {
-    tool_name: "Bash",
-    tool_input: { command: "echo 1 > a && echo 2 > b && echo 3 > c && echo 4 > d" },
-  });
-  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
 });
 
 test("missingSections names what a report lacks", () => {
@@ -187,19 +179,20 @@ test("Copilot: camelCase input and the event name from the command line", () => 
   assert.equal(n.tool_input?.input, "*** Add File: a.js");
 });
 
-test("Copilot: a patch is counted file by file and refused whole past the cap", () => {
+test("Copilot: a patch is counted file by file", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "add math helpers in src/math.js" });
   answer(on, "src/math.js");
-  const patch = (...files: string[]) =>
-    on("PreToolUse", {
-      tool_name: "apply_patch",
-      tool_input: { input: files.map((f) => `*** Add File: ${f}\n+x`).join("\n") },
-    });
-  const big = patch("a.js", "b.js", "c.js", "d.js");
-  assert.equal(big.permissionDecision, "deny"); // top-level shape for the Copilot harness
-  assert.equal(patch("a.js", "b.js"), undefined);
-  assert.equal(patch("c.js", "d.js").hookSpecificOutput.permissionDecision, "deny");
+  const files = ["a.js", "b.js", "c.js", "d.js"];
+  const patch = on("PreToolUse", {
+    tool_name: "apply_patch",
+    tool_input: { input: files.map((f) => `*** Add File: ${f}\n+x`).join("\n") },
+  });
+  assert.equal(patch, undefined);
+  assert.match(
+    on("Stop", { last_assistant_message: report() }).systemMessage,
+    /4 files|went where/,
+  );
 });
 
 test("Copilot: a Stop with no reply text is not checked, and says so", () => {
@@ -305,13 +298,10 @@ test("no level named keeps it unset; level phrasings are read", () => {
   assert.equal(levelAnswer("the advanced discount path in src/a.ts"), undefined);
 });
 
-test("a write outside a task still gets the cap and the report", () => {
+test("a write outside a task still gets the report", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "thanks" });
-  const w = (f: string) =>
-    on("PreToolUse", { tool_name: "Write", tool_input: { file_path: `/p/${f}`, content: "x" } });
-  for (let i = 0; i < CAP; i++) w(`f${i}.ts`);
-  assert.equal(w("extra.ts").hookSpecificOutput.permissionDecision, "deny");
+  on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/f.ts", content: "x" } });
   assert.equal(on("Stop", { last_assistant_message: "done" }).decision, "block");
 });
 
@@ -496,6 +486,7 @@ test("explain: your guess first with code's options, no writes, a checked explan
     tool_input: { file_path: "/p/a.ts", content: "x" },
   });
   assert.match(write.hookSpecificOutput.permissionDecisionReason, /explain mode changes no files/);
+  assert.equal(write.permissionDecision, "deny"); // top-level shape for the Copilot harness
   assert.match(
     on("Stop", { last_assistant_message: "It is a CLI." }).reason,
     /## skarp: explained/,

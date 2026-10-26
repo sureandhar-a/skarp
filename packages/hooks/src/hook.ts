@@ -91,7 +91,6 @@ interface Brainstorm {
   whyAsked?: boolean;
 }
 
-export const CAP = 3; // limit: one slice size for everyone; per-task caps when asked
 const DEPTH: Record<Level, string> = {
   beginner:
     "The user is a beginner: explain every term you use, assume little background, and walk through the key code line by line.",
@@ -501,9 +500,10 @@ export function handle(input: HookInput, home: string): object | undefined {
       `skarp: ${s.mode} mode changes no files. Finish the ${s.mode === "explain" ? "explanation" : "brainstorm"}; if the user wants a change, they say 'build it' and it becomes a task.`,
     );
   if (files.length) {
-    // a write the classifier didn't call a task: it still gets the cap, grade and report
+    // a write the classifier didn't call a task: it still gets the grade and report
     if (!s.reportDue)
       Object.assign(s, {
+        mode: "task",
         task: undefined,
         answer: undefined,
         block: undefined,
@@ -511,18 +511,6 @@ export function handle(input: HookInput, home: string): object | undefined {
         reportDue: true,
         sentBack: false,
       });
-    const fresh = files.filter((f) => !s.touched.some((t) => t.path === f.path));
-    // one call can write several files (a Copilot patch): it is refused whole when it passes the cap
-    if (s.touched.length + fresh.length > CAP) {
-      log("tool_call", {
-        tool: input.tool_name,
-        paths: files.map((f) => f.path),
-        denied: "slice cap",
-      });
-      return deny(
-        `skarp: this slice is capped at ${CAP} files (so far: ${s.touched.map((t) => t.path).join(", ") || "none"}). Change fewer files, finish and report on this slice; the user starts the next one as a new task.`,
-      );
-    }
     for (const f of files) {
       const known = s.touched.find((t) => t.path === f.path);
       if (known) known.content += `\n${f.content}`;
@@ -885,7 +873,6 @@ function fresh(task: string, mode: Mode): Partial<Session> {
 function rulesFor(s: Session, level: Level): string {
   if (s.mode === "explain") return `${explainRules(s.answer)}\n${DEPTH[level]}`;
   return [
-    `Change at most ${CAP} files in this slice; skarp refuses more.`,
     PROGRESS_RULE,
     reportRules(level),
     s.check
