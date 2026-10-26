@@ -23,3 +23,6 @@ docs/design/architecture*
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
 packages/cli/hook.mjs
+
+# release tests: templates, tools and results stay local
+testing/
