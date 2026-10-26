@@ -657,3 +657,49 @@ test("an open task: a different task starts fresh, 'actually' replaces, a reply 
   const replaced = on("UserPromptSubmit", { prompt: "actually, rename foo in src/b.ts" });
   assert.doesNotMatch(replaced.hookSpecificOutput.additionalContext, /continues the open task/);
 });
+
+test("the first question: code's hints only; a card with the AI's own options or wording is refused", () => {
+  const { on } = session();
+  const start = on("UserPromptSubmit", { prompt: "login fails on empty password, fix it" });
+  assert.match(
+    start.hookSpecificOutput.additionalContext,
+    /"UI", "Data or API", "Config or environment"/,
+  );
+  const card = (question: string, ...labels: string[]) =>
+    on("PreToolUse", {
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question, options: labels.map((label) => ({ label })) }] },
+    });
+  const guessed = card("Where do you think the bug is?", "src/auth.ts validate()", "Skip");
+  assert.match(guessed.hookSpecificOutput.permissionDecisionReason, /Use exactly these options/);
+  const reworded = card("May I proceed?", "UI", "Skip");
+  assert.match(reworded.hookSpecificOutput.permissionDecisionReason, /word for word/);
+  // after two refusals the card goes through rather than lock the user out (rule 17)
+  assert.equal(card("May I proceed?", "x"), undefined);
+  const ok = session();
+  ok.on("UserPromptSubmit", { prompt: "login fails on empty password, fix it" });
+  assert.equal(
+    ok.on("PreToolUse", {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Where do you think the bug is?",
+            options: [{ label: "UI" }, { label: "Skip" }],
+          },
+        ],
+      },
+    }),
+    undefined,
+  );
+});
+
+test("the question as text: the AI's own numbered options are sent back once", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
+  on("Stop", { last_assistant_message: "no question" });
+  const text = on("Stop", {
+    last_assistant_message: "Which part?\n1. src/a.ts logger\n2. Skip",
+  });
+  assert.match(text.reason, /exactly these options/);
+});

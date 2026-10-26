@@ -31,22 +31,23 @@ import {
 } from "@skarp/kernel";
 import {
   BS_DECIDE,
-  BS_HINTS,
   BS_QUESTION,
   BUILD_IT,
   brainstormFixes,
   brainstormRules,
   brainstormSummary,
+  cardFixes,
   DECIDE,
   DONE_LISTING,
   EXPLAIN_BACK,
-  EXPLAIN_HINTS,
   EXPLAIN_QUESTION,
   EXPLAIN_REPORT,
   explainRules,
   highStakes,
+  hintsFor,
   type MapEvent,
   type Mode,
+  optionsOk,
   type Phase,
   parseMap,
   RESUME,
@@ -59,7 +60,7 @@ export type Level = "beginner" | "intermediate" | "advanced";
 
 interface Session {
   // skarp's question, not yet answered; options are the numbered choices the AI wrote as text
-  asking?: { block: string; question: string; level: boolean; options?: string[] };
+  asking?: { block: string; question: string; level: boolean; options?: string[]; fixed?: number };
   task?: string; // the task now running
   answer?: string; // your Commit answer for it; undefined when skipped
   block?: string;
@@ -388,7 +389,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       log("ask", { block: "BS1", reason: "brainstorm: your idea first" });
       save();
       return context(
-        `${owed}${askRule(BS_QUESTION, "skarp asks for your own idea before the AI's.", hintRule(BS_HINTS), false)}${brainstormRules("you-first", bs.stakes)}`,
+        `${owed}${askRule(BS_QUESTION, "skarp asks for your own idea before the AI's.", hintRule(hintsFor("BS1")), false)}${brainstormRules("you-first", bs.stakes)}`,
       );
     }
     // explain: your guess first, then a checked explanation; no files change
@@ -400,7 +401,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       log("ask", { block: "EX1", reason: "explain: your guess first" });
       save();
       return context(
-        `${owed}${askRule(EXPLAIN_QUESTION, "skarp asks for your own view before the AI's.", hintRule(EXPLAIN_HINTS), askLevel)}${rulesFor(s, level ?? profile.level ?? "intermediate")}`,
+        `${owed}${askRule(EXPLAIN_QUESTION, "skarp asks for your own view before the AI's.", hintRule(hintsFor("EX1")), askLevel)}${rulesFor(s, level ?? profile.level ?? "intermediate")}`,
       );
     }
     const outcomes = readOutcomes(home);
@@ -425,7 +426,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       ask = askRule(
         step.block.question_text,
         step.reason,
-        `${step.block.brief} Use 2 or 3 options from the task's words alone.`,
+        hintRule(hintsFor(step.block.id)),
         askLevel,
         step.block.id === BUG_BLOCK,
       );
@@ -435,6 +436,17 @@ export function handle(input: HookInput, home: string): object | undefined {
   }
 
   // until skarp's question is answered, every other tool waits
+  // the card must ask skarp's question with skarp's options: the user's view comes first
+  if (event === "PreToolUse" && s.asking && ASK_TOOL.test(input.tool_name ?? "")) {
+    const fixes = cardFixes(input.tool_input, s.asking.question, hintsFor(s.asking.block));
+    if (fixes.length && (s.asking.fixed ?? 0) < 2) {
+      s.asking.fixed = (s.asking.fixed ?? 0) + 1;
+      log("card_refused", { block: s.asking.block, fixes });
+      save();
+      return deny(`skarp: fix the question card.\n- ${fixes.join("\n- ")}`);
+    }
+    return undefined;
+  }
   if (event === "PreToolUse" && s.asking && !ASKING_TOOLS(input.tool_name ?? "")) {
     return deny(
       // the rules ride along: Copilot drops UserPromptSubmit context, so this is all it sees of them
@@ -598,6 +610,20 @@ export function handle(input: HookInput, home: string): object | undefined {
       if (options.length) {
         s.asking.options = options;
         save();
+      }
+      const hints = hintsFor(s.asking.block);
+      if (
+        options.length &&
+        !optionsOk(options, hints) &&
+        !s.asking.fixed &&
+        !input.stop_hook_active
+      ) {
+        s.asking.fixed = 1;
+        save();
+        return {
+          decision: "block",
+          reason: `skarp: ask skarp's question "${s.asking.question}" with exactly these options, as text: ${[...hints, "Skip"].map((h, i) => `${i + 1}. ${h}`).join(" ")}. Then stop; the user's next message is the answer.`,
+        };
       }
       return undefined;
     }

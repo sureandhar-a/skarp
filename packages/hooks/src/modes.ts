@@ -270,3 +270,45 @@ export function brainstormSummary(
     byAi: ideas.filter((i) => i.by === "ai").length,
   };
 }
+
+// --- the first question's options: neutral hints from code, never the AI's guesses ---
+
+const HINTS: Record<string, string[]> = {
+  A14: ["UI", "Data or API", "Config or environment"], // where is the bug
+  "LS-B1": ["One file", "A few related files", "Across the app"], // which part will it touch
+  A1: ["I have a plan", "A rough idea", "Not sure yet"], // your plan
+  "LS-B7": ["I'll write it", "Not sure yet"], // try it once yourself
+  R21: ["The test is wrong", "The code is wrong", "Not sure yet"], // test-only change
+  "read-back": ["I'll type it", "Not sure yet"], // what does this destroy
+  EX1: EXPLAIN_HINTS,
+  BS1: BS_HINTS,
+};
+export const hintsFor = (block: string) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];
+
+const norm = (t: string) =>
+  t
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+// Whether a question card asks skarp's question with skarp's options. Claude: { questions: [{
+// question, options: [{ label }] }] }; VS Code's shape may differ, so an unreadable card passes.
+export function cardFixes(input: unknown, question: string, hints: string[]): string[] {
+  const q = (input as { questions?: unknown[] } | undefined)?.questions?.[0] as
+    | { question?: string; options?: ({ label?: string } | string)[] }
+    | undefined;
+  if (!q || (typeof q.question !== "string" && !Array.isArray(q.options))) return [];
+  const fixes: string[] = [];
+  if (typeof q.question === "string" && !norm(q.question).includes(norm(question)))
+    fixes.push(`Ask skarp's question word for word: "${question}"`);
+  const labels = (q.options ?? []).map((o) => (typeof o === "string" ? o : (o.label ?? "")));
+  if (labels.length && !optionsOk(labels, hints))
+    fixes.push(`Use exactly these options: ${[...hints, "Skip"].map((h) => `"${h}"`).join(", ")}.`);
+  return fixes;
+}
+
+export const optionsOk = (labels: string[], hints: string[]) => {
+  const allowed = new Set([...hints, "Skip"].map(norm));
+  return labels.every((l) => allowed.has(norm(l)));
+};
