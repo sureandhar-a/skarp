@@ -22,3 +22,4 @@ docs/design/architecture*
 
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
+packages/cli/hook.mjs

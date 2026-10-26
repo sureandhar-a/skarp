@@ -8,7 +8,8 @@
       "!docs",
       "!spikes",
       "!graphify-out",
-      "!plugin/skarp/hooks/hook.mjs"
+      "!plugin/skarp/hooks/hook.mjs",
+      "!packages/cli/hook.mjs"
     ]
   },
   "formatter": { "indentStyle": "space", "lineWidth": 100 },
