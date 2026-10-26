@@ -15,6 +15,7 @@ import {
   SECTIONS,
   writtenFiles,
 } from "./hook.ts";
+import { EXPLAIN_REPORT } from "./modes.ts";
 
 const cwd = "/p";
 const report = (body = "") =>
@@ -474,4 +475,42 @@ test("a checked report is saved as a file; ledger lines carry the project and ta
   const seen = lines.find((l) => l.type === "seen");
   assert.ok(seen.payload.fields.includes("secret"));
   assert.ok(!JSON.stringify(seen).includes('"x"'));
+});
+
+const explained = (body = "") =>
+  `Here it is.\n## skarp: explained\n${EXPLAIN_REPORT.sections.map((s) => `### ${s}\nx`).join("\n")}\n${body}`;
+
+test("explain: your guess first with code's options, no writes, a checked explanation, then explain-back", () => {
+  const { on } = session();
+  const start = on("UserPromptSubmit", { prompt: "can you explain the repo to me" });
+  const ctx = start.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /what do you think it does now/);
+  assert.match(ctx, /"I'll type my guess", "No idea yet"/);
+  assert.match(ctx, /## skarp: explained/);
+  answer(on, "a CLI that talks to a server", "beginner");
+  const write = on("PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: "/p/a.ts", content: "x" },
+  });
+  assert.match(write.hookSpecificOutput.permissionDecisionReason, /explain mode changes no files/);
+  assert.match(
+    on("Stop", { last_assistant_message: "It is a CLI." }).reason,
+    /## skarp: explained/,
+  );
+  assert.match(
+    on("Stop", { last_assistant_message: explained(), stop_hook_active: true }).systemMessage,
+    /explanation checked/,
+  );
+  const back = on("UserPromptSubmit", { prompt: "the hook reads stdin and writes a ledger" });
+  assert.match(back.hookSpecificOutput.additionalContext, /what in their answer matches the code/);
+});
+
+test("explain: the guess is quoted in the rules; a new task after it starts fresh", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "walk me through how login works" });
+  on("PostToolUse", { tool_name: "vscode_askQuestions", tool_response: "sessions in redis" });
+  on("Stop", { last_assistant_message: explained() });
+  const next = on("UserPromptSubmit", { prompt: "add a logout button to src/header.tsx" });
+  assert.match(next.hookSpecificOutput.additionalContext, /AskUserQuestion/);
+  assert.match(next.hookSpecificOutput.additionalContext, /## skarp: what changed/);
 });

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyMessage, decideNextStep, findTarget, type KernelInput } from "./kernel.ts";
+import {
+  classifyMessage,
+  decideNextStep,
+  findTarget,
+  type KernelInput,
+  wantsBrainstorm,
+  wantsExplain,
+} from "./kernel.ts";
 
 const pick = (input: KernelInput) => {
   const step = decideNextStep(input);
@@ -179,4 +186,26 @@ test("a test shortcut is challenged before the AI acts; a risky edit before Acce
     touched,
   });
   assert.equal(risky.action === "ask" && risky.block.id, "R21");
+});
+
+test("explain and brainstorm are recognised; an asked-for change stays a task", () => {
+  for (const t of [
+    "can you explain the repo to me",
+    "explain src/auth/session.ts",
+    "walk me through how login works",
+    "what does the build script do",
+    "how does the cache work?",
+  ])
+    assert.ok(wantsExplain(t), t);
+  for (const t of ["explain why login fails and fix it", "can you add a logger", "thanks"])
+    assert.ok(!wantsExplain(t), t);
+  for (const t of [
+    "can we brainstorm on caching",
+    "i have a rough idea on this, can we do a brainstorming",
+    "what are our options for auth?",
+    "I have an idea: move the queue to redis",
+  ])
+    assert.ok(wantsBrainstorm(t), t);
+  for (const t of ["fix the login bug", "explain the repo to me"])
+    assert.ok(!wantsBrainstorm(t), t);
 });

@@ -18,7 +18,19 @@ import {
   overlap,
   rungFor,
   tokens,
+  wantsExplain,
 } from "@skarp/kernel";
+import {
+  BUILD_IT,
+  EXPLAIN_BACK,
+  EXPLAIN_HINTS,
+  EXPLAIN_QUESTION,
+  EXPLAIN_REPORT,
+  explainRules,
+  type Mode,
+  type ReportShape,
+  TASK_REPORT,
+} from "./modes.ts";
 
 export type Level = "beginner" | "intermediate" | "advanced";
 
@@ -36,6 +48,8 @@ interface Session {
   explainOwed: boolean; // the last task ended without a passing report
   id?: string; // the running task's id, on its ledger lines
   seen?: string[]; // events whose field names are logged already
+  mode?: Mode; // what the open work is: a task, an explanation or a brainstorm
+  explainBack?: boolean; // an explanation ended with skarp's "this works because ___"
 }
 
 export const CAP = 3; // limit: one slice size for everyone; per-task caps when asked
@@ -45,14 +59,7 @@ const DEPTH: Record<Level, string> = {
   intermediate: "The user is intermediate: explain the key ideas and skip the basics.",
   advanced: "The user is advanced: be brief and focus on design choices, trade-offs and risks.",
 };
-export const SECTIONS = [
-  "Changes",
-  "How it works",
-  "New ideas",
-  "Diagram",
-  "Tests and checks",
-  "Check by hand",
-];
+export const SECTIONS = TASK_REPORT.sections;
 // what the AI may use while skarp's question waits: the card, and the search that loads it
 // Claude Code's AskUserQuestion, VS Code's askQuestions (vscode/askQuestions, ask_questions)
 const ASK_TOOL = /^AskUserQuestion$|ask_?questions/i;
@@ -99,7 +106,7 @@ const REPLACES = /^(actually|instead|never\s?mind|forget (it|that)|scratch that|
 export function reportRules(level: Level): string {
   const heads = SECTIONS.map((s) => `### ${s}`).join(", ");
   return [
-    "skarp report: when you finish this task, end your reply with a section headed exactly `## skarp: what changed`, with these sub-headings in this order:",
+    `skarp report: when you finish this task, end your reply with a section headed exactly \`${TASK_REPORT.head}\`, with these sub-headings in this order:`,
     `${heads}.`,
     "Changes: each file you changed, one line on what and why. How it works: a walkthrough of the key code.",
     "New ideas: any concept or term the user may not know, explained. Diagram: plain-text box-and-arrow diagrams of how the changed files connect and how data flows through the change; mark unknown links with `?`.",
@@ -110,22 +117,23 @@ export function reportRules(level: Level): string {
 }
 
 // Which required sub-headings a reply is missing, or ["report"] when it has no skarp section.
-export function missingSections(text: string): string[] {
-  const at = text.indexOf("## skarp: what changed");
+export function missingSections(text: string, shape: ReportShape = TASK_REPORT): string[] {
+  const at = text.indexOf(shape.head);
   if (at < 0) return ["report"];
   const report = text.slice(at);
-  return SECTIONS.filter((s) => !report.includes(`### ${s}`));
+  return shape.sections.filter((s) => !report.includes(`### ${s}`));
 }
 
 // What to fix in a report's shape: missing, empty or out-of-order sections, or a report hidden in
 // a code block. It checks shape, not truth (README known gaps).
-export function reportFixes(text: string): string[] {
-  const missing = missingSections(text);
+export function reportFixes(text: string, shape: ReportShape = TASK_REPORT): string[] {
+  const SECTIONS = shape.sections;
+  const missing = missingSections(text, shape);
   if (missing[0] === "report")
     return [
-      `Add the \`## skarp: what changed\` report with these sub-headings in order: ${SECTIONS.map((s) => `\`### ${s}\``).join(", ")}.`,
+      `Add the \`${shape.head}\` report with these sub-headings in order: ${SECTIONS.map((s) => `\`### ${s}\``).join(", ")}.`,
     ];
-  const at = text.indexOf("## skarp: what changed");
+  const at = text.indexOf(shape.head);
   const fixes = missing.map((m) => `Add the missing \`### ${m}\` section.`);
   if ((text.slice(0, at).match(/```/g) ?? []).length % 2)
     fixes.push("Write the report as plain text, not inside a code block.");
@@ -218,6 +226,19 @@ export function handle(input: HookInput, home: string): object | undefined {
     const owed = s.explainOwed
       ? "skarp: your last change has no complete skarp report yet. Give it first, then go on.\n"
       : "";
+    // the answer to an explanation's closing "this works because ___", unless it's new work
+    if (s.explainBack && !s.asking) {
+      s.explainBack = false;
+      save();
+      const fresh = classifyMessage(prompt) === "task" || wantsExplain(prompt);
+      if (!fresh && !/^(skip|not yet)\b/i.test(said)) {
+        log("explain_back", { text: prompt });
+        return context(
+          `The user answered skarp's "${EXPLAIN_BACK}": ${prompt}\nIn one or two lines, say what in their answer matches the code and what is missing, citing files. No praise.`,
+        );
+      }
+      log("explain_back_skipped", {});
+    }
     // no question card on this surface: the AI wrote skarp's question as text, and this is the answer
     const asked = s.asking;
     if (asked && !REPLACES.test(said)) {
@@ -244,13 +265,26 @@ export function handle(input: HookInput, home: string): object | undefined {
       });
       save();
       return context(
-        `${skipped ? "The user skipped skarp's question." : `The user's answer to skarp's question "${asked.question}": ${answer}`}\nNow do the user's task: ${s.task}\nChange at most ${CAP} files in this slice; skarp refuses more.\n${reportRules(lvl ?? profile.level ?? "intermediate")}`,
+        `${skipped ? "The user skipped skarp's question." : `The user's answer to skarp's question "${asked.question}": ${answer}`}\n${s.mode === "explain" ? "Now explain" : "Now do the user's task"}: ${s.task}\n${rulesFor(s, lvl ?? profile.level ?? "intermediate")}`,
       );
     }
     Object.assign(s, { ran: false, testsPassed: undefined }); // a run counts for this turn only
     if (asked) Object.assign(s, { asking: undefined, reportDue: false }); // "actually...": the waiting task is dropped
     save();
     log("user_message", { text: prompt });
+    const askLevel = !profile.level && !level;
+    // explain: your guess first, then a checked explanation; no files change
+    if (wantsExplain(prompt) && !BUILD_IT.test(said)) {
+      Object.assign(s, fresh(prompt, "explain"), {
+        block: "EX1",
+        asking: { block: "EX1", question: EXPLAIN_QUESTION, level: askLevel },
+      });
+      log("ask", { block: "EX1", reason: "explain: your guess first" });
+      save();
+      return context(
+        `${owed}${askRule(EXPLAIN_QUESTION, "skarp asks for your own view before the AI's.", hintRule(EXPLAIN_HINTS), askLevel)}${rulesFor(s, level ?? profile.level ?? "intermediate")}`,
+      );
+    }
     const outcomes = readOutcomes(home);
     const concept = matchConcept(prompt, [...new Set(outcomes.map((o) => o.concept))]);
     const step = decideNextStep({
@@ -264,37 +298,28 @@ export function handle(input: HookInput, home: string): object | undefined {
       return owed ? context(owed) : undefined;
     }
     // a task: the report is owed at Stop, whether skarp asks first or stays quiet (faded)
-    Object.assign(s, {
-      id: randomUUID().slice(0, 8),
-      task: prompt,
-      answer: undefined,
-      block: undefined,
-      asking: undefined,
-      touched: [],
-      ran: false,
-      testsPassed: undefined,
-      reportDue: true,
-      sentBack: false,
-    });
+    Object.assign(s, fresh(prompt, "task"));
     let ask = "";
     if (step.action === "ask") {
-      const askLevel = !profile.level && !level;
       s.asking = { block: step.block.id, question: step.block.question_text, level: askLevel };
       s.block = step.block.id;
       log("ask", { block: step.block.id, reason: step.reason });
-      ask = askRule(step.block.question_text, step.reason, step.block.brief, askLevel);
+      ask = askRule(
+        step.block.question_text,
+        step.reason,
+        `${step.block.brief} Use 2 or 3 options from the task's words alone.`,
+        askLevel,
+      );
     }
     save();
-    return context(
-      `${owed}${ask}Change at most ${CAP} files in this slice; skarp refuses more.\n${reportRules(level ?? profile.level ?? "intermediate")}`,
-    );
+    return context(`${owed}${ask}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
   }
 
   // until skarp's question is answered, every other tool waits
   if (event === "PreToolUse" && s.asking && !ASKING_TOOLS(input.tool_name ?? "")) {
     return deny(
       // the rules ride along: Copilot drops UserPromptSubmit context, so this is all it sees of them
-      `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code): "${s.asking.question}". Nothing else runs until they answer.\nAfter the answer, change at most ${CAP} files.\n${reportRules(profile.level ?? "intermediate")}`,
+      `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code): "${s.asking.question}". Nothing else runs until they answer.\nAfter the answer:\n${rulesFor(s, profile.level ?? "intermediate")}`,
     );
   }
 
@@ -326,6 +351,10 @@ export function handle(input: HookInput, home: string): object | undefined {
   }
 
   const files = event === "PreToolUse" ? writtenFiles(input) : [];
+  if (files.length && s.reportDue && s.mode === "explain")
+    return deny(
+      "skarp: explain mode changes no files. Finish the explanation; if the user wants a change, they say 'build it' and it becomes a task.",
+    );
   if (files.length) {
     // a write the classifier didn't call a task: it still gets the cap, grade and report
     if (!s.reportDue)
@@ -425,8 +454,9 @@ export function handle(input: HookInput, home: string): object | undefined {
         ].join("\n"),
       };
     }
-    saveReport(home, "task", reply, log);
-    const shape = reportFixes(reply);
+    const kind = s.mode ?? "task";
+    saveReport(home, kind, reply, log);
+    const shape = reportFixes(reply, kind === "explain" ? EXPLAIN_REPORT : TASK_REPORT);
     const failed = new Set(
       checkReply(reply, undefined, [], {
         edited: s.touched.map((t) => t.path),
@@ -446,12 +476,22 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
 
     const lines = grade(s, sid, log);
-    lines.push(
-      fixes.length
-        ? "skarp: the report is incomplete; it is owed on your next message."
-        : "skarp: report checked.",
-    );
-    Object.assign(s, { reportDue: false, sentBack: false, explainOwed: fixes.length > 0 });
+    if (kind === "explain")
+      lines.push(
+        fixes.length ? "skarp: the explanation is incomplete." : "skarp: explanation checked.",
+      );
+    else
+      lines.push(
+        fixes.length
+          ? "skarp: the report is incomplete; it is owed on your next message."
+          : "skarp: report checked.",
+      );
+    Object.assign(s, {
+      reportDue: false,
+      sentBack: false,
+      explainOwed: kind === "task" && fixes.length > 0,
+      explainBack: kind === "explain" && !fixes.length,
+    });
     save();
     return { systemMessage: lines.join("\n") };
   }
@@ -468,6 +508,33 @@ export function handle(input: HookInput, home: string): object | undefined {
   }
   return undefined;
 }
+
+// The state a new piece of work starts from.
+function fresh(task: string, mode: Mode): Partial<Session> {
+  return {
+    id: randomUUID().slice(0, 8),
+    mode,
+    task,
+    answer: undefined,
+    block: undefined,
+    asking: undefined,
+    touched: [],
+    ran: false,
+    testsPassed: undefined,
+    reportDue: true,
+    sentBack: false,
+    explainBack: false,
+  };
+}
+
+// The rules for the open work, given after skarp's question (and in deny reasons for Copilot).
+function rulesFor(s: Session, level: Level): string {
+  if (s.mode === "explain") return `${explainRules(s.answer)}\n${DEPTH[level]}`;
+  return `Change at most ${CAP} files in this slice; skarp refuses more.\n${reportRules(level)}`;
+}
+
+const hintRule = (hints: string[]) =>
+  `Use exactly these options: ${hints.map((h) => `"${h}"`).join(", ")}; the user can also type their own answer.`;
 
 // The plan grade (Gap): your Commit answer against the files really touched. Never "correct".
 function grade(s: Session, sid: string, log: (type: string, payload: object) => void): string[] {
@@ -634,15 +701,15 @@ function deny(reason: string) {
 }
 
 // skarp's question goes through Claude Code's own question card, so it is an input, not a warning.
-export function askRule(question: string, reason: string, brief: string, level: boolean): string {
+export function askRule(question: string, reason: string, options: string, level: boolean): string {
   return `${[
     "skarp rule, before anything else: ask the user with your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), so they get a question card.",
-    `Question 1, header "skarp": "${question}" (${reason}) Options: ${brief} Use 2 or 3 options from the task's words alone, then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
+    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
     level
       ? 'Question 2, header "Level": "Your level, so skarp\'s explanations fit you?" with options "beginner", "intermediate", "advanced".'
       : "",
     "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and options as text and stop; the user's next message is the answer.",
-    "Do not read files, run commands or start the task until the user answers; skarp refuses other tools until then. After the answer, do the user's task.",
+    "Do not read files, run commands or start the work until the user answers; skarp refuses other tools until then. After the answer, do what the user asked.",
   ]
     .filter(Boolean)
     .join("\n")}\n`;
@@ -653,8 +720,9 @@ export function askRule(question: string, reason: string, brief: string, level: 
 export function standingRules(level: Level): string {
   return [
     "skarp is on in this session. It checks your work with hooks; follow its rules when they appear.",
-    "When the user gives a task, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
+    "When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
     reportRules(level),
+    `When the user asks you to explain code (no change), use the explain report instead:\n${explainRules()}`,
   ].join("\n");
 }
 

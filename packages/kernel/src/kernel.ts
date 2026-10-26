@@ -102,6 +102,24 @@ export function findTarget(text: string): Target | undefined {
 // an understand message that also asks for a change runs that task once understood
 export const hasTask = (text: string) => TASK_VERBS.test(text.toLowerCase());
 
+// explain: a wish to understand, with or without a target ("explain the repo to me"). A task
+// verb only counts when it's asked for ("…and fix it", "can you add"), so "what does the build
+// script do" stays an explain.
+const EXPLAIN =
+  /\b(explain|walk me through|help me understand|understand|get to know|what does .{1,60} do|how does .{1,60} work)\b/;
+const ASKED_TASK = new RegExp(
+  `(?:^|\\b(?:and|then|also|please)\\s+|\\b(?:can|could|would) you\\s+)${TASK_VERBS.source}`,
+);
+export const wantsExplain = (text: string) => {
+  const t = text.trim().toLowerCase();
+  return EXPLAIN.test(t) && !ASKED_TASK.test(t);
+};
+
+// brainstorm: thinking an idea or a choice through, before any code
+const BRAINSTORM =
+  /\b(brainstorm\w*|rough idea|bounce (some )?ideas?|think (this|it) through|explore (the )?(idea|options)|what are (my|our|the) options|pros and cons|sanity[- ]check (my|this|an?) (idea|plan|approach)|i have an? (idea|plan))\b/;
+export const wantsBrainstorm = (text: string) => BRAINSTORM.test(text.toLowerCase());
+
 const ask = (block: Block, reason: string): KernelOutput => ({ action: "ask", block, reason });
 const silent = (intent: Intent, reason: string): KernelOutput => ({
   action: "continue",
