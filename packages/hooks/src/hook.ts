@@ -89,6 +89,7 @@ interface Brainstorm {
   said: string[]; // the user's own words, for quotes
   ideas: number;
   whyAsked?: boolean;
+  pending?: string; // a high-stakes pick waiting for its pre-mortem before it's recorded
 }
 
 const DEPTH: Record<Level, string> = {
@@ -318,13 +319,23 @@ export function handle(input: HookInput, home: string): object | undefined {
     const askLevel = !profile.level && !level;
     // an open brainstorm: every message is part of it until a decision, or "actually / new task"
     if (s.mode === "brainstorm" && s.bs) {
-      if (!REPLACES.test(said) && !/^end (the )?brainstorm\b/i.test(said)) {
+      const ending = END_BS.test(said);
+      if (RESUME.test(said) && !ending)
+        return context(
+          `This continues the open brainstorm.\n${brainstormRules(s.bs.phase, s.bs.stakes)}`,
+        );
+      if (!REPLACES.test(said) && !ending) {
         const note = brainstormTurn(s, s.bs, prompt, home, log);
         save();
         return context(note);
       }
-      closeBrainstorm(s, s.bs, home, log);
+      const path = closeBrainstorm(s, s.bs, home, log);
       save();
+      // "end brainstorm" only ends it; "actually, ..." goes on as new work
+      if (ending)
+        return context(
+          `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`,
+        );
     }
     // an open task carries on across turns ("still failing", "try the other file") until it's done
     const open = s.mode === "task" && s.reportDue && s.task !== undefined;
@@ -707,6 +718,7 @@ export function handle(input: HookInput, home: string): object | undefined {
 // a request that already carries the user's idea
 const IDEA_IN =
   /\b(idea|plan|thought|approach)\b\s*(is|was|:|-|–)\s*\S|\bwhat if we\b|\bi (think|want) (we|to)\b/i;
+const END_BS = /^(end|stop|close|finish) (the |this |our )?brainstorm\b/i;
 const REASON = /\b(because|since|so that|as it|as we|due to|which means|otherwise)\b/i;
 
 const bsDir = (home: string, id: string) => join(home, "brainstorms", id);
@@ -764,7 +776,11 @@ function brainstormTurn(
         note =
           "The user wants to decide, but a decision needs at least two options. Ask for one more option, or whether doing nothing is the rival.";
       } else if (REASON.test(text) && !BUILD_IT.test(text.trim())) {
-        return decide(s, bs, text, text, home, log);
+        if (!bs.stakes) return decide(s, bs, text, text, home, log);
+        // hard to undo: the pre-mortem comes before the pick is recorded
+        bs.phase = "decide";
+        bs.pending = text;
+        note = `The user picked: "${text}". Before skarp records it, write the pre-mortem and ask whether it changes their pick.`;
       } else {
         bs.phase = "decide";
         note = `The user wants to decide. Ask exactly: "${BS_DECIDE}"`;
@@ -772,6 +788,11 @@ function brainstormTurn(
     } else note = "Go on with the stress test: one question at a time.";
   } else {
     // decide: the user's own words are the decision; a reason is required
+    if (bs.pending) {
+      // after the pre-mortem: a new pick replaces the waiting one, anything else keeps it
+      const pick = DECIDE.test(text) ? text : bs.pending;
+      return decide(s, bs, pick, pick, home, log);
+    }
     if (bs.whyAsked) return decide(s, bs, bs.said.at(-2) ?? text, text, home, log);
     if (!REASON.test(text) && text.split(/\s+/).length < 8) {
       bs.whyAsked = true;

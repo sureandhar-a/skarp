@@ -710,3 +710,37 @@ test("an honest failing-test line doesn't block the own-words step after an expl
   const back = on("UserPromptSubmit", { prompt: "total adds price times qty" });
   assert.match(back.hookSpecificOutput.additionalContext, /what in their answer matches the code/);
 });
+
+test("brainstorm: 'end brainstorm' only ends it, and a later resume brings it back", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "I have a rough idea: cache prices in memory. brainstorm?" });
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "continue the brainstorm" })),
+    /continues the open brainstorm/,
+  );
+  const end = on("UserPromptSubmit", { prompt: "end brainstorm" });
+  assert.match(ctx(end), /ended the brainstorm/);
+  assert.doesNotMatch(ctx(end), /what's your idea/);
+  const back = on("UserPromptSubmit", { prompt: "continue the brainstorm on caching prices" });
+  assert.match(ctx(back), /continues an earlier brainstorm/);
+  assert.doesNotMatch(ctx(back), /The user.s idea, I/);
+});
+
+test("brainstorm: a hard-to-undo pick with a reason gets the pre-mortem before it's recorded", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "I have a rough idea: store money as floats in the schema" });
+  on("UserPromptSubmit", { prompt: "or store cents as integers" });
+  on("UserPromptSubmit", { prompt: "done" });
+  const pick = on("UserPromptSubmit", { prompt: "let's go with cents because floats drift" });
+  assert.match(ctx(pick), /Pre-mortem/);
+  assert.doesNotMatch(ctx(pick), /recorded the user's decision/);
+  const after = on("UserPromptSubmit", { prompt: "rounding on old rows, but we can backfill" });
+  assert.match(
+    ctx(after),
+    /recorded the user's decision: "let's go with cents because floats drift"/,
+  );
+});
