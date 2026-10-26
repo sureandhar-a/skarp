@@ -32,6 +32,7 @@ test("Commit only for tasks; chat and quick questions get silence", () => {
     ["test_bulk_discount_at_ten is failing. can you fix it?", "task"],
     ["Yes please, go ahead", "chat"],
     ["why does test_bulk_discount_at_ten fail?", "question"],
+    ["rm -rf node_modules and reinstall", "task"],
   ] as const) {
     assert.equal(classifyMessage(text), kind, text);
     if (kind !== "task") assert.equal(pick({ text }), kind, text);

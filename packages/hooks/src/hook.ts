@@ -79,6 +79,7 @@ interface Session {
   lastDecision?: string; // the last brainstorm's decision: "build it" starts it as a task
   check?: string; // for a bug: what the user says would show it's fixed
   closing?: boolean; // the user said it's done: the report is due this turn
+  lastExplain?: string; // the last explanation's request: "build it" starts a task from it
   blockReason?: string; // skarp's last Stop send-back: Copilot replays it as a user prompt
 }
 
@@ -237,7 +238,22 @@ export function handle(input: HookInput, home: string): object | undefined {
     explainOwed: false,
   };
   const profile: { level?: Level } = read(join(home, "profile.json")) ?? {};
+  // the user's message is logged just before skarp's next line, so it carries the id of the
+  // work it opens or continues
+  let pendingMsg: object | undefined;
   const log = (type: string, payload: object) => {
+    if (type === "user_message") {
+      pendingMsg = payload;
+      return;
+    }
+    if (pendingMsg) {
+      const msg = pendingMsg;
+      pendingMsg = undefined;
+      writeLine("user_message", msg);
+    }
+    if (type) writeLine(type, payload);
+  };
+  const writeLine = (type: string, payload: object) => {
     // sync, so lines land in order; best effort, a failed write never stops the agent
     try {
       mkdirSync(join(home, "ledger"), { recursive: true, mode: 0o700 });
@@ -269,6 +285,13 @@ export function handle(input: HookInput, home: string): object | undefined {
   const setLevel = (level: Level) => write(join(home, "profile.json"), { ...profile, level });
 
   if (event === "UserPromptSubmit") {
+    try {
+      return onPrompt();
+    } finally {
+      log("", {}); // flushes a user_message no other line followed
+    }
+  }
+  function onPrompt(): object | undefined {
     const prompt: string = input.prompt ?? "";
     const said = prompt.trim();
     // skarp's own send-back, replayed by Copilot as a user message: the AI acts on it, skarp
@@ -300,9 +323,17 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
     // no question card on this surface: the AI wrote skarp's question as text, and this is the answer
     const asked = s.asking;
-    if (asked && !REPLACES.test(said)) {
+    const aside = (SMALL_TALK.test(said) && said.split(/\s+/).length <= 3) || said.endsWith("?");
+    // a waiting "your guess first" doesn't hold up a quick question: the explanation is dropped
+    const dropExplain = asked?.block === "EX1" && aside;
+    if (asked && !REPLACES.test(said) && !dropExplain) {
+      // "level advanced" on its own sets the level; it is not the answer
+      if (level && !said.replace(LEVEL_SET, "").replace(/[\s.,!]/g, ""))
+        return context(
+          `The user set their level to ${level}. skarp's question is still waiting: "${asked.question}". Ask it again (question card, or as a numbered list) and stop.`,
+        );
       // "thanks" or a question back is not an answer: skarp's question keeps waiting
-      if ((SMALL_TALK.test(said) && said.split(/\s+/).length <= 3) || said.endsWith("?"))
+      if (aside)
         return context(
           `skarp's question is still waiting: "${asked.question}". Reply to the user's message briefly, then ask skarp's question again (question card, or as text) and stop.`,
         );
@@ -333,7 +364,8 @@ export function handle(input: HookInput, home: string): object | undefined {
       );
     }
     Object.assign(s, { ran: false, testsPassed: undefined }); // a run counts for this turn only
-    if (asked) Object.assign(s, { asking: undefined, reportDue: false }); // "actually...": the waiting task is dropped
+    // "actually...": the waiting task is dropped
+    if (asked) Object.assign(s, { asking: undefined, reportDue: false, mode: undefined });
     save();
     log("user_message", { text: prompt });
     const askLevel = !profile.level && !level;
@@ -358,10 +390,26 @@ export function handle(input: HookInput, home: string): object | undefined {
         );
     }
     // an open task carries on across turns ("still failing", "try the other file") until it's done
+    const lvl = level ?? profile.level ?? "intermediate";
+    // "still failing" after the report: the last task wasn't done after all
+    if (s.mode === "task" && !s.reportDue && s.task !== undefined && STILL.test(said)) {
+      Object.assign(s, { reportDue: true, closing: false, sentBack: false });
+      log("task_reopened", {});
+      save();
+      return context(
+        `${owed}The user says the last task isn't done: ${s.task}\n${rulesFor(s, lvl)}`,
+      );
+    }
     const open = s.mode === "task" && s.reportDue && s.task !== undefined;
-    if (open && !REPLACES.test(said) && !newTask(s, prompt)) {
-      const lvl = level ?? profile.level ?? "intermediate";
-      if (DONE_TASK.test(said)) {
+    // chat with nothing changed yet doesn't drag the task's rules along
+    const offTopic =
+      !s.touched.length &&
+      !STILL.test(said) &&
+      classifyMessage(prompt) !== "task" &&
+      !related(s, prompt);
+    const done = isDone(said);
+    if (open && !REPLACES.test(said) && !offTopic && (done || !newTask(s, prompt))) {
+      if (done) {
         s.closing = true;
         log("task_closing", {});
         save();
@@ -446,7 +494,11 @@ export function handle(input: HookInput, home: string): object | undefined {
       return owed ? context(owed) : undefined;
     }
     // a task: the report is owed at Stop, whether skarp asks first or stays quiet (faded)
-    Object.assign(s, fresh(prompt, "task"));
+    // "build it" right after an explanation builds on what was explained
+    const after = s.lastExplain && BUILD_IT.test(said) ? s.lastExplain : undefined;
+    const built = after ? `${prompt} (what was explained: ${after})` : prompt;
+    const from = after ? `This builds on the explanation the user asked for: ${after}\n` : "";
+    Object.assign(s, fresh(built, "task"), { lastExplain: undefined });
     let ask = "";
     if (step.action === "ask") {
       s.asking = { block: step.block.id, question: step.block.question_text, level: askLevel };
@@ -461,7 +513,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       );
     }
     save();
-    return context(`${owed}${ask}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
+    return context(`${owed}${from}${ask}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
   }
 
   // until skarp's question is answered, every other tool waits
@@ -700,6 +752,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       explainOwed: kind === "task" && fixes.length > 0,
       // the own-words question was asked, whatever else the check found
       explainBack: kind === "explain" && /### Your turn|this works because/i.test(reply),
+      lastExplain: kind === "explain" ? s.task : s.lastExplain,
     });
     save();
     return { systemMessage: lines.join("\n") };
@@ -913,6 +966,17 @@ const PROGRESS_RULE =
 const DONE_TASK =
   /^(it'?s )?(fixed|works( now)?|working( now)?|that (did it|worked|fixed it)|all good|done|ship it|looks good)\b/i;
 const BUG_BLOCK = "A14";
+// "yep that fixed it", "ok works now": a short message that says it's done, with no "but" or "not"
+const DONE_ANY =
+  /\b(fixed|works( now)?|working now|that (did it|worked|fixed it)|all good|ship it|looks good|tests? pass(es)? now)\b/i;
+const isDone = (said: string) =>
+  DONE_TASK.test(said) ||
+  (said.split(/\s+/).length <= 8 &&
+    DONE_ANY.test(said) &&
+    !/\b(not|n't|still|but|no)\b/i.test(said));
+// "still failing", "nope, still broken": the fix didn't work
+const STILL =
+  /\b(still|again)\b[^.?!]{0,30}\b(fail\w*|broken|wrong|error\w*|crash\w*|not work\w*|doesn'?t work)\b|^(nope|no,? (it'?s )?still|didn'?t work|not fixed|doesn'?t work)\b/i;
 
 // A message during an open task is a new task only when it names different work: task verbs,
 // plus a file the task hasn't touched, or no telling word in common with it.
@@ -921,11 +985,18 @@ const PLAIN =
 function newTask(s: Session, prompt: string): boolean {
   if (wantsExplain(prompt) || wantsBrainstorm(prompt)) return true;
   if (classifyMessage(prompt) !== "task") return false;
-  const known = new Set(tokens([s.task ?? "", ...s.touched.map((t) => t.path)].join(" ")));
-  const words = tokens(prompt);
-  if (words.some((w) => /[./]/.test(w) && !known.has(w))) return true; // a file it hasn't touched
-  const telling = words.filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w));
-  return !telling.some((w) => known.has(w));
+  const known = taskWords(s);
+  if (tokens(prompt).some((w) => /[./]/.test(w) && !known.has(w))) return true; // a file it hasn't touched
+  return !related(s, prompt);
+}
+const taskWords = (s: Session) =>
+  new Set(tokens([s.task ?? "", ...s.touched.map((t) => t.path)].join(" ")));
+// the message shares a telling word with the open task
+function related(s: Session, prompt: string): boolean {
+  const known = taskWords(s);
+  return tokens(prompt)
+    .filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w))
+    .some((w) => known.has(w));
 }
 
 const hintRule = (hints: string[]) =>
@@ -947,12 +1018,12 @@ function grade(s: Session, sid: string, log: (type: string, payload: object) => 
       block: s.block ?? "",
       pass,
     };
-    log("outcome", { ...o, score });
-    lines.push(
-      pass
-        ? `skarp: your plan matched the change (${s.touched.length} file${s.touched.length > 1 ? "s" : ""}).`
-        : `skarp: the change went where your plan didn't${missed.length ? `: ${missed.join(", ")}` : ""}.`,
-    );
+    const text = pass
+      ? `skarp: your plan matched the change (${s.touched.length} file${s.touched.length > 1 ? "s" : ""}).`
+      : `skarp: the change went where your plan didn't${missed.length ? `: ${missed.join(", ")}` : ""}.`;
+    // the wording too: Copilot doesn't show Stop messages, so `skarp-copilot status` reads it here
+    log("outcome", { ...o, score, text });
+    lines.push(text);
   } else if (s.touched.length) lines.push("skarp: no plan was given, so the change is not graded.");
   return lines;
 }

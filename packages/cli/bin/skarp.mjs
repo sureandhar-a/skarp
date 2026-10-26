@@ -168,6 +168,16 @@ export function status({ home, cwd, out = console.log } = {}) {
     );
     const ref = t.filter((l) => l.type === "referee").at(-1);
     if (ref?.payload.not_run) out(`  report check: not run (${ref.payload.not_run})`);
+    else if (ref) {
+      const { shape = [], failed = [], fixes = [] } = ref.payload;
+      const n = shape.length + failed.length + fixes.length;
+      out(
+        `  ${mark(!n)} last ${ref.payload.check} check: ${n ? `${n} to fix${failed.length ? ` (${failed.join(", ")})` : ""}` : "passed"}`,
+      );
+    }
+    // skarp's own grade wording; it names files, never what you wrote
+    const grade = t.filter((l) => l.type === "outcome").at(-1);
+    if (grade?.payload.text) out(`  grade: ${grade.payload.text.replace(/^skarp: /, "")}`);
   }
   for (const l of seen) out(`  ${l.payload.event} fields: ${l.payload.fields.join(", ")}`);
   return 0;

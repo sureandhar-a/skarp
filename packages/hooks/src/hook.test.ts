@@ -807,3 +807,75 @@ test("end checks: options sent back on the second Stop, a test-only bug fix, no 
   const end = ex.on("Stop", { last_assistant_message: explained("I've added a diagram above.") });
   assert.match(end.systemMessage, /explanation checked/);
 });
+
+test("follow-ups: done words anywhere, 'still failing' after the report reopens, chat with nothing changed is chat", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "applyDiscount is broken in cart.js, can you fix it" });
+  answer(on, "cart.js applyDiscount", "A test passes", "beginner");
+  on("PreToolUse", {
+    tool_name: "Edit",
+    tool_input: { file_path: "/p/cart.js", new_string: "/ 100" },
+  });
+  on("Stop", { last_assistant_message: "Tried it.\n### skarp: status\nnext: run tests" });
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "yep that fixed it" })),
+    /says the task is done/,
+  );
+  on("Stop", { last_assistant_message: report() });
+  const again = on("UserPromptSubmit", { prompt: "hmm it's still failing on 0 percent" });
+  assert.match(ctx(again), /last task isn't done/);
+  assert.doesNotMatch(ctx(again), /AskUserQuestion/);
+
+  const quiet = session();
+  quiet.on("UserPromptSubmit", { prompt: "add a retry to src/api.ts" });
+  answer(quiet.on, "src/api.ts", "beginner");
+  quiet.on("Stop", { last_assistant_message: "Looking first." });
+  assert.equal(quiet.on("UserPromptSubmit", { prompt: "how's the weather" }), undefined);
+});
+
+test("explain: a quick question or a bare level doesn't get stuck behind the guess; build it keeps the topic", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "explain the repo to me" });
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "level advanced" })),
+    /set their level to advanced/,
+  );
+  assert.equal(on("UserPromptSubmit", { prompt: "is there a bug in applyDiscount?" }), undefined);
+
+  const ex = session();
+  ex.on("UserPromptSubmit", { prompt: "explain how the cart works" });
+  answer(ex.on, "it sums items", "beginner");
+  ex.on("Stop", { last_assistant_message: explained() });
+  const build = ex.on("UserPromptSubmit", { prompt: "build it" });
+  assert.match(ctx(build), /explain how the cart works/);
+});
+
+test("ledger: a new task's user_message carries the new task's id; the grade has its wording", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  const on = (event: string, extra: object = {}) =>
+    handle({ session_id: "l1", cwd, hook_event_name: event, ...extra }, home);
+  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
+  on("PostToolUse", {
+    tool_name: "AskUserQuestion",
+    tool_response: { answers: { q: "src/a.ts", l: "beginner" } },
+  });
+  on("PreToolUse", {
+    tool_name: "Write",
+    tool_input: { file_path: "/p/src/a.ts", content: "log" },
+  });
+  on("Stop", { last_assistant_message: report() });
+  on("UserPromptSubmit", { prompt: "add a cache to src/b.ts" });
+  const lines = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const msgs = lines.filter((l) => l.type === "user_message");
+  const asks = lines.filter((l) => l.type === "ask");
+  assert.equal(msgs.at(-1).payload.task_id, asks.at(-1).payload.task_id);
+  assert.notEqual(msgs.at(-1).payload.task_id, asks[0].payload.task_id);
+  assert.match(lines.find((l) => l.type === "outcome").payload.text, /your plan matched/);
+});

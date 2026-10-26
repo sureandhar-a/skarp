@@ -78,6 +78,7 @@ const READ_ONLY =
 export function classifyMessage(text: string): MessageKind {
   const t = text.trim().toLowerCase();
   if (UNDERSTAND.test(t) && findTarget(text)) return "understand";
+  if (DESTRUCTIVE.test(t)) return "task"; // "rm -rf node_modules and reinstall" gets its read-back
   if (TASK_VERBS.test(t) || (BUG.test(t) && ASKS_HELP.test(t))) return "task";
   if ((CHAT.test(t) && t.split(/\s+/).length <= 5) || t.split(/\s+/).length <= 2) return "chat";
   return "question";
