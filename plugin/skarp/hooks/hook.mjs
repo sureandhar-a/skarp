@@ -289,12 +289,15 @@ var TEST_SHORTCUT = /\b(change|edit|update|modify|tweak|adjust)\b.{0,40}\btests?
 var RISKY_OUT = /\b(except|finally|rollback|release|unlock|close|catch|revert|undo)\b/;
 var RISKY_IN = /\b(raise|throw)\b/;
 var TEST_FILE = /(^|\/)(tests?|spec|__tests__)\/|(^|\/)test_[^/]*$|[._-](test|spec)\.\w+$/;
+var isTestFile = (path) => TEST_FILE.test(path);
 var PREVIEW = /(--dry-run|\bexplain\b|\bplan\b|count\(|--check|--diff)/i;
 var READ_ONLY = /^\s*(git\s+(show|log|diff|status|blame)|cat|ls|head|tail|grep|rg|wc|pwd|tree)\b[^;&|<>`$]*$/;
 function classifyMessage(text) {
   const t = text.trim().toLowerCase();
   if (UNDERSTAND.test(t) && findTarget(text))
     return "understand";
+  if (DESTRUCTIVE.test(t))
+    return "task";
   if (TASK_VERBS.test(t) || BUG.test(t) && ASKS_HELP.test(t))
     return "task";
   if (CHAT.test(t) && t.split(/\s+/).length <= 5 || t.split(/\s+/).length <= 2)
@@ -434,6 +437,15 @@ var DID = /\b(I(?:'ve| have)? (added|created|wrote|updated|changed|modified|fixe
 var NAME = /`([^`\n]+)`|\b([a-z]\w*_\w+|[a-z]+[A-Z]\w*)\b/g;
 var TESTS_PASS = /\b(tests?|suite)\b[^.!?\n]{0,60}\b(pass(es|ing|ed)?|succeed(s|ed)?|green)\b|\b(pass(es|ing)?)\b[^.!?\n]{0,20}\ball (the )?tests\b/i;
 var HEDGED = /\b(not|n't|never|no|cannot|unless|if|whether|should|would|will|expect(ed)?|once|after you|to make)\b/i;
+var TESTS_COUNT = /\b\d+\s*\/\s*\d+\s+(?:tests?\s+)?(?:pass|passing|passed)\b|\ball\s+(?:\d+\s+)?tests?\s+(?:are\s+)?(?:pass|passing|green)\b/i;
+var FAILED = /\bfail(s|ed|ing|ures?)?\b/i;
+function untestedClaim(text, testsPassed) {
+  if (testsPassed)
+    return false;
+  if (testsPassed === false && FAILED.test(text))
+    return false;
+  return sentences(text).some((x) => (TESTS_PASS.test(x) || TESTS_COUNT.test(x)) && !HEDGED.test(x) && !FAILED.test(x));
+}
 var sentences = (text) => text.split(/(?<=[.!?\n])/);
 function checkReply(text, report, observed, acted) {
   const failed = [];
@@ -443,7 +455,7 @@ function checkReply(text, report, observed, acted) {
     failed.push("praise");
   if (acted && unbacked(text, acted))
     failed.push("unbacked_action");
-  if (acted && !acted.testsPassed && sentences(text).some((x) => TESTS_PASS.test(x) && !HEDGED.test(x)))
+  if (acted && untestedClaim(text, acted.testsPassed))
     failed.push("untested_claim");
   if (!report)
     return [...failed, "no_report"];
@@ -816,12 +828,26 @@ var HINTS = {
 var hintsFor = (block) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];
 var norm = (t) => t.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
 function cardFixes(input, question, hints) {
+  const ask2 = input;
+  if (typeof ask2?.message === "string") return askUserFixes(ask2, question, hints);
   const q = input?.questions?.[0];
   if (!q || typeof q.question !== "string" && !Array.isArray(q.options)) return [];
   const fixes = [];
   if (typeof q.question === "string" && !norm(q.question).includes(norm(question)))
     fixes.push(`Ask skarp's question word for word: "${question}"`);
   const labels = (q.options ?? []).map((o) => typeof o === "string" ? o : o.label ?? "");
+  if (labels.length && !optionsOk(labels, hints))
+    fixes.push(`Use exactly these options: ${[...hints, "Skip"].map((h) => `"${h}"`).join(", ")}.`);
+  return fixes;
+}
+function askUserFixes(ask2, question, hints) {
+  const fixes = [];
+  if (!norm(ask2.message ?? "").includes(norm(question)))
+    fixes.push(`Ask skarp's question word for word: "${question}"`);
+  const fields = Object.values(ask2.requestedSchema?.properties ?? {});
+  if (fields.some((f) => f.default !== void 0))
+    fixes.push("Leave out the default answer: the user gives their own.");
+  const labels = fields.flatMap((f) => f.enum ?? []);
   if (labels.length && !optionsOk(labels, hints))
     fixes.push(`Use exactly these options: ${[...hints, "Skip"].map((h) => `"${h}"`).join(", ")}.`);
   return fixes;
@@ -838,17 +864,18 @@ var DEPTH = {
   advanced: "The user is advanced: be brief and focus on design choices, trade-offs and risks."
 };
 var SECTIONS = TASK_REPORT.sections;
-var ASK_TOOL = /^AskUserQuestion$|ask_?questions/i;
+var ASK_TOOL = /^AskUserQuestion$|ask_?questions|^ask_?user$/i;
+var ASK_NAMES = "AskUserQuestion in Claude Code, ask_user or askQuestions in VS Code";
 var ASKING_TOOLS = (tool) => ASK_TOOL.test(tool) || tool === "ToolSearch";
 var RUNS = /^(Bash|run_in_terminal|runInTerminal)$|terminal/i;
 var WRITES = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 var TEST_RUN2 = /(?:^|&&|\|\||;)\s*(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha)\b|(?:vitest|jest|mocha|pytest|rspec|phpunit)\b|python3?\s+-m\s+(?:pytest|unittest)\b|node\s+--test\b|(?:go|cargo|deno|dotnet|make)\s+test\b)/;
-var PIPED = /(^|[^|])\|([^|]|$)/;
+var HIDES_EXIT = /;|\|/;
 var MORE_PRAISE = /\b(nice (idea|work|job|plan)|awesome|amazing|you nailed it|great (job|work|idea|plan|choice))\b/i;
-var TESTS_CLAIM = /\b\d+\s*\/\s*\d+\s+(?:tests?\s+)?(?:pass|passing|passed)\b|\ball\s+(?:\d+\s+)?tests?\s+(?:are\s+)?(?:pass|passing|green)\b/i;
 var REPORT_FAILS = {
   praise: "Remove the praise; state facts only.",
   unbacked_action: "You say you added or did something that the changed files don't show. Say only what the changes contain.",
+  test_only: "This bug fix changed only test files. Say plainly whether the bug in the code is still there, and what would fix it in the code.",
   untested_claim: "You say tests pass, but skarp saw no passing test run this turn (piping test output, e.g. `| tail`, hides failures). Run the tests plainly, or say they were not run."
 };
 var LEVEL_SET = /\b(?:set\s+my\s+level\s+to|level\s*(?:[:=]|to|is)?)\s*(beginner|intermediate|advanced)\b/i;
@@ -912,7 +939,20 @@ function handle(input, home) {
     explainOwed: false
   };
   const profile = read(join(home, "profile.json")) ?? {};
+  let pendingMsg;
   const log = (type, payload) => {
+    if (type === "user_message") {
+      pendingMsg = payload;
+      return;
+    }
+    if (pendingMsg) {
+      const msg = pendingMsg;
+      pendingMsg = void 0;
+      writeLine("user_message", msg);
+    }
+    if (type) writeLine(type, payload);
+  };
+  const writeLine = (type, payload) => {
     try {
       mkdirSync(join(home, "ledger"), { recursive: true, mode: 448 });
       const where = { cwd: input.cwd, task_id: s.id };
@@ -926,6 +966,11 @@ function handle(input, home) {
     }
   };
   const save = () => write(file, s);
+  const sendBack = (reason) => {
+    Object.assign(s, { sentBack: true, blockReason: reason });
+    save();
+    return { decision: "block", reason };
+  };
   const event = input.hook_event_name ?? "";
   if (!s.seen?.includes(event)) {
     s.seen = [...s.seen ?? [], event];
@@ -935,8 +980,21 @@ function handle(input, home) {
   if (event === "SessionStart") return startContext(standingRules(profile.level ?? "intermediate"));
   const setLevel = (level) => write(join(home, "profile.json"), { ...profile, level });
   if (event === "UserPromptSubmit") {
+    try {
+      return onPrompt();
+    } finally {
+      log("", {});
+    }
+  }
+  function onPrompt() {
     const prompt = input.prompt ?? "";
     const said = prompt.trim();
+    if (s.blockReason && said.startsWith(s.blockReason.trim().slice(0, 60))) {
+      s.blockReason = void 0;
+      save();
+      log("send_back_replayed", {});
+      return void 0;
+    }
     const level = levelIn(prompt);
     if (level) setLevel(level);
     const owed = s.explainOwed ? "skarp: your last change has no complete skarp report yet. Give it first, then go on.\n" : "";
@@ -954,8 +1012,14 @@ In one or two lines, say what in their answer matches the code and what is missi
       log("explain_back_skipped", {});
     }
     const asked2 = s.asking;
-    if (asked2 && !REPLACES.test(said)) {
-      if (SMALL_TALK.test(said) && said.split(/\s+/).length <= 3 || said.endsWith("?"))
+    const aside = SMALL_TALK.test(said) && said.split(/\s+/).length <= 3 || said.endsWith("?");
+    const dropExplain = asked2?.block === "EX1" && aside;
+    if (asked2 && !REPLACES.test(said) && !dropExplain) {
+      if (level && !said.replace(LEVEL_SET, "").replace(/[\s.,!]/g, ""))
+        return context(
+          `The user set their level to ${level}. skarp's question is still waiting: "${asked2.question}". Ask it again (question card, or as a numbered list) and stop.`
+        );
+      if (aside)
         return context(
           `skarp's question is still waiting: "${asked2.question}". Reply to the user's message briefly, then ask skarp's question again (question card, or as text) and stop.`
         );
@@ -966,8 +1030,8 @@ In one or two lines, say what in their answer matches the code and what is missi
       );
       if (skipped) log("answer_skipped", { block: asked2.block, via: "typed" });
       else log("answer", { block: asked2.block, text: answer, via: "typed" });
-      const lvl = level ?? (asked2.level ? levelAnswer(prompt) : void 0);
-      if (lvl && !level) setLevel(lvl);
+      const lvl2 = level ?? (asked2.level ? levelAnswer(prompt) : void 0);
+      if (lvl2 && !level) setLevel(lvl2);
       Object.assign(s, {
         asking: void 0,
         answer: skipped ? void 0 : answer,
@@ -982,27 +1046,48 @@ In one or two lines, say what in their answer matches the code and what is missi
       return context(
         `${skipped ? "The user skipped skarp's question." : `The user's answer to skarp's question "${asked2.question}": ${answer}`}
 ${s.mode === "explain" ? "Now explain" : "Now do the user's task"}: ${s.task}
-${rulesFor(s, lvl ?? profile.level ?? "intermediate")}`
+${rulesFor(s, lvl2 ?? profile.level ?? "intermediate")}`
       );
     }
     Object.assign(s, { ran: false, testsPassed: void 0 });
-    if (asked2) Object.assign(s, { asking: void 0, reportDue: false });
+    if (asked2) Object.assign(s, { asking: void 0, reportDue: false, mode: void 0 });
     save();
     log("user_message", { text: prompt });
     const askLevel = !profile.level && !level;
     if (s.mode === "brainstorm" && s.bs) {
-      if (!REPLACES.test(said) && !/^end (the )?brainstorm\b/i.test(said)) {
+      const ending = END_BS.test(said);
+      if (RESUME.test(said) && !ending)
+        return context(
+          `This continues the open brainstorm.
+${brainstormRules(s.bs.phase, s.bs.stakes)}`
+        );
+      if (!REPLACES.test(said) && !ending) {
         const note = brainstormTurn(s, s.bs, prompt, home, log);
         save();
         return context(note);
       }
-      closeBrainstorm(s, s.bs, home, log);
+      const path = closeBrainstorm(s, s.bs, home, log);
       save();
+      if (ending)
+        return context(
+          `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`
+        );
+    }
+    const lvl = level ?? profile.level ?? "intermediate";
+    if (s.mode === "task" && !s.reportDue && s.task !== void 0 && STILL.test(said)) {
+      Object.assign(s, { reportDue: true, closing: false, sentBack: false });
+      log("task_reopened", {});
+      save();
+      return context(
+        `${owed}The user says the last task isn't done: ${s.task}
+${rulesFor(s, lvl)}`
+      );
     }
     const open = s.mode === "task" && s.reportDue && s.task !== void 0;
-    if (open && !REPLACES.test(said) && !newTask(s, prompt)) {
-      const lvl = level ?? profile.level ?? "intermediate";
-      if (DONE_TASK.test(said)) {
+    const offTopic = !s.touched.length && !STILL.test(said) && classifyMessage(prompt) !== "task" && !related(s, prompt);
+    const done = isDone(said);
+    if (open && !REPLACES.test(said) && !offTopic && (done || !newTask(s, prompt))) {
+      if (done) {
         s.closing = true;
         log("task_closing", {});
         save();
@@ -1087,7 +1172,11 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
     if (step.action !== "ask" && classifyMessage(prompt) !== "task") {
       return owed ? context(owed) : void 0;
     }
-    Object.assign(s, fresh(prompt, "task"));
+    const after = s.lastExplain && BUILD_IT.test(said) ? s.lastExplain : void 0;
+    const built = after ? `${prompt} (what was explained: ${after})` : prompt;
+    const from = after ? `This builds on the explanation the user asked for: ${after}
+` : "";
+    Object.assign(s, fresh(built, "task"), { lastExplain: void 0 });
     let ask2 = "";
     if (step.action === "ask") {
       s.asking = { block: step.block.id, question: step.block.question_text, level: askLevel };
@@ -1102,7 +1191,7 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
       );
     }
     save();
-    return context(`${owed}${ask2}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
+    return context(`${owed}${from}${ask2}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
   }
   if (event === "PreToolUse" && s.asking && ASK_TOOL.test(input.tool_name ?? "")) {
     const fixes = cardFixes(input.tool_input, s.asking.question, hintsFor(s.asking.block));
@@ -1118,7 +1207,7 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
   if (event === "PreToolUse" && s.asking && !ASKING_TOOLS(input.tool_name ?? "")) {
     return deny(
       // the rules ride along: Copilot drops UserPromptSubmit context, so this is all it sees of them
-      `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code): "${s.asking.question}". Nothing else runs until they answer.
+      `skarp: ask the user skarp's question with your question tool first (${ASK_NAMES}): "${s.asking.question}". Nothing else runs until they answer.
 After the answer:
 ${rulesFor(s, profile.level ?? "intermediate")}`
     );
@@ -1186,7 +1275,8 @@ ${f.content}`;
       const out = typeof input.tool_response === "string" ? input.tool_response : JSON.stringify(input.tool_response ?? "");
       const code = out.match(/exit code[:\s]+(\d+)/i)?.[1];
       let passed = event === "PostToolUseFailure" ? false : code !== void 0 ? code === "0" : input.tool_name === "Bash" ? true : void 0;
-      if (PIPED.test(cmd) && !/pipefail/.test(cmd) && passed) passed = void 0;
+      const after = cmd.slice((cmd.match(TEST_RUN2)?.index ?? 0) + 1);
+      if (passed && HIDES_EXIT.test(after) && !/pipefail/.test(cmd)) passed = void 0;
       s.testsPassed = passed;
       log("run", { command: cmd, passed: passed ?? "unknown" });
     }
@@ -1203,16 +1293,12 @@ ${f.content}`;
     const fixes = brainstormFixes(reply, bs.phase, bs.said, bs.stakes, bs.unlocked);
     if (MORE_PRAISE.test(reply)) fixes.push(REPORT_FAILS.praise ?? "");
     log("referee", { check: "brainstorm", phase: bs.phase, fixes });
-    if (fixes.length && !s.sentBack && !input.stop_hook_active) {
-      s.sentBack = true;
-      save();
-      return {
-        decision: "block",
-        reason: `skarp brainstorm check:
+    if (fixes.length && !s.sentBack && !input.stop_hook_active)
+      return sendBack(
+        `skarp brainstorm check:
 - ${fixes.join("\n- ")}
 ${brainstormRules(bs.phase, bs.stakes)}`
-      };
-    }
+      );
     bsLog(home, bs, { kind: "turn", role: "ai", text: reply });
     for (const e of parseMap(reply)) {
       if (e.type === "idea" && e.by === "ai") bs.ideas++;
@@ -1223,31 +1309,24 @@ ${brainstormRules(bs.phase, bs.stakes)}`
   }
   if (event === "Stop" && (s.reportDue || s.asking)) {
     if (s.asking) {
-      if (!s.sentBack && !input.stop_hook_active) {
-        s.sentBack = true;
-        save();
-        return {
-          decision: "block",
-          reason: `skarp: ask the user skarp's question with your question tool first (AskUserQuestion in Claude Code, askQuestions in VS Code; load it with ToolSearch if needed): "${s.asking.question}". If that tool is not available, write the question and its options as text and stop; the user's next message is the answer.`
-        };
-      }
-      const options = [
-        ...(input.last_assistant_message ?? "").matchAll(
-          /^\s*(?:[-*]\s*)?\**(\d+)[.)]\**\s*(.+)$/gm
-        )
-      ].map((m) => (m[2] ?? "").replace(/\*\*/g, "").trim());
+      if (!s.sentBack && !input.stop_hook_active)
+        return sendBack(
+          `skarp: ask the user skarp's question with your question tool first (${ASK_NAMES}; load it with ToolSearch if needed, without mentioning that to the user): "${s.asking.question}". If no question tool is available, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.`
+        );
+      const text = input.last_assistant_message ?? lastAssistantText(input.transcript_path) ?? "";
+      const listed = (re) => [...text.matchAll(re)].map((m) => (m[1] ?? "").replace(/\*\*/g, "").trim());
+      const numbered = listed(/^\s*(?:[-*]\s*)?\**\d+[.)]\**\s*(.+)$/gm);
+      const options = numbered.length ? numbered : listed(/^\s*[-*•]\s+(.+)$/gm);
       if (options.length) {
         s.asking.options = options;
         save();
       }
       const hints = hintsFor(s.asking.block);
-      if (options.length && !optionsOk(options, hints) && !s.asking.fixed && !input.stop_hook_active) {
+      if (options.length && !optionsOk(options, hints) && !s.asking.fixed) {
         s.asking.fixed = 1;
-        save();
-        return {
-          decision: "block",
-          reason: `skarp: ask skarp's question "${s.asking.question}" with exactly these options, as text: ${[...hints, "Skip"].map((h, i) => `${i + 1}. ${h}`).join(" ")}. Then stop; the user's next message is the answer.`
-        };
+        return sendBack(
+          `skarp: ask skarp's question "${s.asking.question}" with exactly these options, as a numbered list: ${[...hints, "Skip"].map((h, i) => `${i + 1}. ${h}`).join(" ")}. Then stop; the user's next message is the answer.`
+        );
       }
       return void 0;
     }
@@ -1272,14 +1351,10 @@ ${brainstormRules(bs.phase, bs.stakes)}`
         return void 0;
       }
       if (!s.touched.length) return void 0;
-      if (!s.sentBack && !input.stop_hook_active) {
-        s.sentBack = true;
-        save();
-        return {
-          decision: "block",
-          reason: "skarp: you changed files but gave neither the report nor a status. If the task is done, give the full `## skarp: what changed` report; if not, end with `### skarp: status` (found so far, tried, next step)."
-        };
-      }
+      if (!s.sentBack && !input.stop_hook_active)
+        return sendBack(
+          "skarp: you changed files but gave neither the report nor a status. If the task is done, give the full `## skarp: what changed` report; if not, end with `### skarp: status` (found so far, tried, next step)."
+        );
     }
     saveReport(home, kind, reply, log);
     const shape = reportFixes(reply, kind === "explain" ? EXPLAIN_REPORT : TASK_REPORT);
@@ -1291,16 +1366,15 @@ ${brainstormRules(bs.phase, bs.stakes)}`
         testsPassed: s.testsPassed
       }).filter((f) => f in REPORT_FAILS)
     );
+    if (kind === "explain") failed.delete("unbacked_action");
     if (MORE_PRAISE.test(reply)) failed.add("praise");
-    if (TESTS_CLAIM.test(reply) && !s.testsPassed) failed.add("untested_claim");
+    const paths = s.touched.map((t) => t.path);
+    if (s.block === BUG_BLOCK && paths.length && paths.every(isTestFile)) failed.add("test_only");
     const fixes = [...shape, ...[...failed].map((f) => REPORT_FAILS[f])];
     log("referee", { check: "report", shape, failed: [...failed] });
-    if (fixes.length && !s.sentBack && !input.stop_hook_active) {
-      s.sentBack = true;
-      save();
-      return { decision: "block", reason: `skarp report check:
-- ${fixes.join("\n- ")}` };
-    }
+    if (fixes.length && !s.sentBack && !input.stop_hook_active)
+      return sendBack(`skarp report check:
+- ${fixes.join("\n- ")}`);
     const lines = grade(s, sid, log);
     if (kind === "explain")
       lines.push(
@@ -1315,7 +1389,9 @@ ${brainstormRules(bs.phase, bs.stakes)}`
       sentBack: false,
       closing: false,
       explainOwed: kind === "task" && fixes.length > 0,
-      explainBack: kind === "explain" && !fixes.length
+      // the own-words question was asked, whatever else the check found
+      explainBack: kind === "explain" && /### Your turn|this works because/i.test(reply),
+      lastExplain: kind === "explain" ? s.task : s.lastExplain
     });
     save();
     return { systemMessage: lines.join("\n") };
@@ -1332,6 +1408,7 @@ ${brainstormRules(bs.phase, bs.stakes)}`
   return void 0;
 }
 var IDEA_IN = /\b(idea|plan|thought|approach)\b\s*(is|was|:|-|–)\s*\S|\bwhat if we\b|\bi (think|want) (we|to)\b/i;
+var END_BS = /^(end|stop|close|finish) (the |this |our )?brainstorm\b/i;
 var REASON = /\b(because|since|so that|as it|as we|due to|which means|otherwise)\b/i;
 var bsDir = (home, id) => join(home, "brainstorms", id);
 function bsLog(home, bs, event) {
@@ -1377,13 +1454,20 @@ function brainstormTurn(s, bs, text, home, log) {
       if (bs.ideas < 2) {
         note = "The user wants to decide, but a decision needs at least two options. Ask for one more option, or whether doing nothing is the rival.";
       } else if (REASON.test(text) && !BUILD_IT.test(text.trim())) {
-        return decide(s, bs, text, text, home, log);
+        if (!bs.stakes) return decide(s, bs, text, text, home, log);
+        bs.phase = "decide";
+        bs.pending = text;
+        note = `The user picked: "${text}". Before skarp records it, write the pre-mortem and ask whether it changes their pick.`;
       } else {
         bs.phase = "decide";
         note = `The user wants to decide. Ask exactly: "${BS_DECIDE}"`;
       }
     } else note = "Go on with the stress test: one question at a time.";
   } else {
+    if (bs.pending) {
+      const pick = DECIDE.test(text) ? text : bs.pending;
+      return decide(s, bs, pick, pick, home, log);
+    }
     if (bs.whyAsked) return decide(s, bs, bs.said.at(-2) ?? text, text, home, log);
     if (!REASON.test(text) && text.split(/\s+/).length < 8) {
       bs.whyAsked = true;
@@ -1462,15 +1546,21 @@ ${DEPTH[level]}`;
 var PROGRESS_RULE = "If the task isn't finished at the end of this reply (still investigating, or a fix not yet confirmed), end with `### skarp: status` (found so far, tried, next step) instead of the report. Give the full report only when the task is done.";
 var DONE_TASK = /^(it'?s )?(fixed|works( now)?|working( now)?|that (did it|worked|fixed it)|all good|done|ship it|looks good)\b/i;
 var BUG_BLOCK = "A14";
+var DONE_ANY = /\b(fixed|works( now)?|working now|that (did it|worked|fixed it)|all good|ship it|looks good|tests? pass(es)? now)\b/i;
+var isDone = (said) => DONE_TASK.test(said) || said.split(/\s+/).length <= 8 && DONE_ANY.test(said) && !/\b(not|n't|still|but|no)\b/i.test(said);
+var STILL = /\b(still|again)\b[^.?!]{0,30}\b(fail\w*|broken|wrong|error\w*|crash\w*|not work\w*|doesn'?t work)\b|^(nope|no,? (it'?s )?still|didn'?t work|not fixed|doesn'?t work)\b/i;
 var PLAIN = /^(fix|add|create|build|implement|change|refactor|write|make|update|remove|delete|rename|move|migrate|generate|debug|convert|replace|please|also|again|this|that|file|code|test|tests|src|ts|js|tsx|jsx|py|now|still|then)$/;
 function newTask(s, prompt) {
   if (wantsExplain(prompt) || wantsBrainstorm(prompt)) return true;
   if (classifyMessage(prompt) !== "task") return false;
-  const known = new Set(tokens([s.task ?? "", ...s.touched.map((t) => t.path)].join(" ")));
-  const words = tokens(prompt);
-  if (words.some((w) => /[./]/.test(w) && !known.has(w))) return true;
-  const telling = words.filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w));
-  return !telling.some((w) => known.has(w));
+  const known = taskWords(s);
+  if (tokens(prompt).some((w) => /[./]/.test(w) && !known.has(w))) return true;
+  return !related(s, prompt);
+}
+var taskWords = (s) => new Set(tokens([s.task ?? "", ...s.touched.map((t) => t.path)].join(" ")));
+function related(s, prompt) {
+  const known = taskWords(s);
+  return tokens(prompt).filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w)).some((w) => known.has(w));
 }
 var hintRule = (hints) => `Use exactly these options: ${hints.map((h) => `"${h}"`).join(", ")}; the user can also type their own answer.`;
 function grade(s, sid, log) {
@@ -1488,10 +1578,9 @@ function grade(s, sid, log) {
       block: s.block ?? "",
       pass
     };
-    log("outcome", { ...o, score });
-    lines.push(
-      pass ? `skarp: your plan matched the change (${s.touched.length} file${s.touched.length > 1 ? "s" : ""}).` : `skarp: the change went where your plan didn't${missed.length ? `: ${missed.join(", ")}` : ""}.`
-    );
+    const text = pass ? `skarp: your plan matched the change (${s.touched.length} file${s.touched.length > 1 ? "s" : ""}).` : `skarp: the change went where your plan didn't${missed.length ? `: ${missed.join(", ")}` : ""}.`;
+    log("outcome", { ...o, score, text });
+    lines.push(text);
   } else if (s.touched.length) lines.push("skarp: no plan was given, so the change is not graded.");
   return lines;
 }
@@ -1583,7 +1672,8 @@ function readAnswers(r) {
       return [v];
     }
   }
-  const said = v?.text_result_for_llm;
+  const c = v;
+  const said = c?.text_result_for_llm ?? c?.textResultForLlm;
   if (typeof said === "string")
     return /cancelled/i.test(said) ? ["Skip"] : [said.replace(/^User responded:\s*/i, "")];
   const all = v?.answers;
@@ -1609,11 +1699,11 @@ function deny(reason) {
 }
 function askRule(question, reason, options, level, check = false) {
   return `${[
-    "skarp rule, before anything else: ask the user with your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), so they get a question card.",
+    `skarp rule, before anything else: ask the user with your question tool (${ASK_NAMES}), so they get a question card.`,
     `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
     check ? `Question 2, header "Check": "What would show it's fixed?" with options "A test passes", "I'll try it by hand", "Not sure"; the user can also type their own.` : "",
     level ? `Question ${check ? 3 : 2}, header "Level": "Your level, so skarp's explanations fit you?" with options "beginner", "intermediate", "advanced".` : "",
-    "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and options as text and stop; the user's next message is the answer.",
+    "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.",
     "Do not read files, run commands or start the work until the user answers; skarp refuses other tools until then. After the answer, do what the user asked."
   ].filter(Boolean).join("\n")}
 `;
@@ -1621,7 +1711,7 @@ function askRule(question, reason, options, level, check = false) {
 function standingRules(level) {
   return [
     "skarp is on in this session. It checks your work with hooks; follow its rules when they appear.",
-    "When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (AskUserQuestion in Claude Code, askQuestions in VS Code), or write it as text and stop.",
+    `When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (${ASK_NAMES}), or write it as a numbered list and stop.`,
     reportRules(level),
     `When the user asks you to explain code (no change), use the explain report instead:
 ${explainRules()}`,

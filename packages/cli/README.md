@@ -47,13 +47,14 @@ skarp picks one of three ways of working from your message:
 - **An explanation** ("explain the repo to me"): your guess first, a checked explanation with a diagram, then "In your own words: this works because ___". No file changes.
 - **A brainstorm** ("can we brainstorm on caching?"): the AI acts as a senior colleague. You give your ideas first, it stress-tests them with evidence, and you decide with your own reason. The whole brainstorm, every idea and the decision are saved.
 
-Chat and quick questions are never held. You can always reply "skip" or "not yet"; both are logged, never locked.
+Chat is never held. "What does X do?" asks for your guess first, but a quick question while it waits goes ahead. You can always reply "skip" or "not yet"; both are logged, never locked.
 
 ## How Copilot differs from Claude Code
 
-- Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules when the session starts and enforces them by refusing tools and sending replies back.
+- Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules when the session starts (on VS Code 1.143 that comes after your first message) and enforces them by refusing tools and sending replies back.
 - Copilot shows one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message.
-- skarp's end-of-task messages show under Copilot's reply as a "Warning from Stop hook".
+- On VS Code 1.143, Copilot doesn't show skarp's end-of-task messages; run `npx skarp-copilot status` to see the last check and grade.
+- When skarp sends the AI back, Copilot passes skarp's note to the AI as a chat message, so you may see it in the chat.
 
 ## Your data
 

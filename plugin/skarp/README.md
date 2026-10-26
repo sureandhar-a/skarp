@@ -30,7 +30,7 @@ The AI acts as a senior colleague who asks questions and stress-tests your ideas
 4. **You decide.** A decision needs at least two options and your reason in your own words. Hard-to-undo topics (schema, auth, payments, deletes) get a pre-mortem first.
 5. **Kept.** The whole conversation, every idea (who raised it, for and against, verdict, evidence) and the decision are saved. "Continue the brainstorm on X" brings it back; "build it" starts the decision as a task without asking again.
 
-Chat and quick questions are never held. You can always reply "skip" or "not yet"; both are logged, never locked.
+Chat is never held. "What does X do?" asks for your guess first, but a quick question while it waits goes ahead. You can always reply "skip" or "not yet"; both are logged, never locked.
 
 ## Install
 
@@ -67,9 +67,10 @@ This writes `.github/hooks/skarp.json` and switches on `chat.useHooks` in `.vsco
 To check it, run `npx skarp-copilot status`. It shows what's installed and whether your last task, explanation or brainstorm went through each step, with field names and ✓/✗ only, never what you wrote. Update with `npx skarp-copilot@latest setup`. Remove with `npx skarp-copilot remove` (add `--all` to delete your records too).
 
 How Copilot differs from Claude Code:
-- Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules once when the session starts and enforces them by refusing tools and sending replies back.
+- Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules when the session starts (on VS Code 1.143 that comes after your first message) and enforces them by refusing tools and sending replies back.
 - Copilot shows one question per card, so set your level by writing `level beginner` (or another level) in a message.
-- skarp's end-of-task messages show under Copilot's reply as a "Warning from Stop hook".
+- On VS Code 1.143, Copilot doesn't show skarp's end-of-task messages; run `npx skarp-copilot status` to see the last check and grade.
+- When skarp sends the AI back, Copilot passes skarp's note to the AI as a chat message, so you may see it in the chat.
 
 ## What it keeps, and where
 

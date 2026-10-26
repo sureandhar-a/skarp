@@ -172,7 +172,7 @@ npx skarp-copilot status
 
 It prints what's installed and whether your last piece of work was asked, answered and saved, with ✓/✗ and field names only, never what you wrote. If nothing was logged, your VS Code may use its older Local runtime; run `npx skarp-copilot setup --project` in your project and reload VS Code.
 
-Copilot asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message. skarp's grade shows under the reply as a "Warning from Stop hook".
+Copilot asks only one question per card, so set your level by writing `level beginner` (or `intermediate`, `advanced`) in a message. On VS Code 1.143, Copilot doesn't show skarp's end-of-task messages; run `npx skarp-copilot status` to see the last check and grade. When skarp sends the AI back, Copilot passes skarp's note to the AI as a chat message, so you may see it in the chat.
 
 To update, run `npx skarp-copilot@latest setup`. To remove, run `npx skarp-copilot remove`. For how Copilot differs from Claude Code, see the [plugin README](plugin/skarp/README.md#github-copilot-in-vs-code-experimental).
 
