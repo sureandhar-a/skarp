@@ -9,9 +9,10 @@ skarp picks one of three ways of working from your message.
 ### A task: "fix the login bug", "add a logout button"
 
 1. **Asks before the AI starts.** skarp holds the task and asks one question, such as "Where do you think the bug is?". The options are fixed hints from skarp, never the AI's guesses, and free text always works. A card with the AI's own options or reworded question is refused. Bugs also get "What would show it's fixed?". Your task is saved, so you don't retype it.
-2. **Keeps the task open until it's done.** "Still failing" continues the same task: no new question. While the fix isn't finished, the AI ends with a short status (found so far, tried, next step) instead of the report. Saying "fixed" or "works now" asks for the report.
-3. **Grades your plan once, at the end.** skarp compares your answer with every file the task changed. You get "your plan matched the change" or "the change went where your plan didn't: …". Never "correct". There's no file limit.
-4. **Ends with a checked report** under `## skarp: what changed`: Changes, How it works, New ideas, Diagram, Tests and checks, Check by hand. skarp checks that every section is there, that there's no praise, that nothing claims a change the files don't contain, and that "tests pass" appears only if a test really ran and passed. If a check fails, the AI is sent back once.
+2. **Explains before the AI builds.** The AI reads the code and writes `## skarp: where you stand`: your view, what the code does now (file:line), what will change, and the gap between them. Then it quizzes you in your own words, and skarp asks "Ready for the AI to build it?" (Yes, build it / I didn't understand / Still confused about a part / Skip). Writes are refused until then. "I didn't understand" gets a different explanation; the third time, the plain answer. How deep it goes depends on your level and your answers; an area you know gets a short explanation. The explanation is never skipped, only the answering.
+3. **Keeps the task open until it's done.** "Still failing" continues the same task: no new question. While the fix isn't finished, the AI ends with a short status (found so far, tried, next step) instead of the report. Saying "fixed" or "works now" asks for the report.
+4. **Grades your plan once, at the end.** skarp compares your answer with every file the task changed. You get "your plan matched the change" or "the change went where your plan didn't: …". Never "correct". There's no file limit.
+5. **Ends with a checked report** under `## skarp: what changed`: Changes, How it works, New ideas, Diagram, Tests and checks, Check by hand. skarp checks that every section is there, that there's no praise, that nothing claims a change the files don't contain, and that "tests pass" appears only if a test really ran and passed. If a check fails, the AI is sent back once.
 
 ### An explanation: "explain the repo to me", "how does the cache work?"
 
@@ -28,7 +29,7 @@ The AI acts as a senior colleague who asks questions and stress-tests your ideas
 2. **Quiet while you list.** The AI only acknowledges and asks "anything else?" until you say "done".
 3. **Stress test.** At most two questions per turn, each quoting your exact words; each idea restated neutrally before it's judged; every verdict (holds / risky / doesn't hold / unknown) backed by evidence. "Great idea" with nothing behind it is sent back.
 4. **You decide.** A decision needs at least two options and your reason in your own words. Hard-to-undo topics (schema, auth, payments, deletes) get a pre-mortem first.
-5. **Kept.** The whole conversation, every idea (who raised it, for and against, verdict, evidence) and the decision are saved. "Continue the brainstorm on X" brings it back; "build it" starts the decision as a task without asking again.
+5. **Kept.** The whole conversation, every idea (who raised it, for and against, verdict, evidence) and the decision are saved. "Continue the brainstorm on X" brings it back; "build it" starts the decision as a task without asking again (it is still explained first).
 
 Chat is never held. "What does X do?" asks for your guess first, but a quick question while it waits goes ahead. You can always reply "skip" or "not yet"; both are logged, never locked.
 

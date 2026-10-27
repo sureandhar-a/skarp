@@ -38,12 +38,13 @@ skarp enforces this with hooks instead of asking the AI nicely. Your plan comes 
 
 ## How it works
 
-You give Claude or Copilot a task as usual. skarp steps in at four points:
+You give Claude or Copilot a task as usual. skarp steps in at five points:
 
 1. **Before the AI starts**, skarp asks you one question, such as "Where do you think the bug is?" The options are neutral hints from skarp, never the AI's own guesses, and free text always works. It saves your task, so you don't have to type it again.
-2. **While the AI works**, the task stays open across messages: "still failing" continues it without a new question. Until the work is done, the AI ends each turn with a short status instead of the report.
-3. **When the task is done**, skarp compares your answer with every file the task changed. It tells you either that your plan matched the change, or where the change went instead.
-4. **Every task ends with a report**: what changed, how it works, new ideas, a diagram, tests, and what to check by hand. skarp checks the report in code and sends it back once if a section is missing, if it contains praise, or if it claims tests passed when none were run.
+2. **Before any change**, the AI explains what the code does now and what will change, compares that with your answer, and quizzes you in your own words. skarp then asks "Ready for the AI to build it?" (Yes, build it / I didn't understand / Still confused about a part / Skip) and refuses writes until you answer. The explanation is never skipped, only the answering; an area you know gets a short one.
+3. **While the AI works**, the task stays open across messages: "still failing" continues it without a new question. Until the work is done, the AI ends each turn with a short status instead of the report.
+4. **When the task is done**, skarp compares your answer with every file the task changed. It tells you either that your plan matched the change, or where the change went instead.
+5. **Every task ends with a report**: what changed, how it works, new ideas, a diagram, tests, and what to check by hand. skarp checks the report in code and sends it back once if a section is missing, if it contains praise, or if it claims tests passed when none were run.
 
 Explanations and brainstorms get their own flow, below.
 
@@ -81,7 +82,7 @@ skarp reads your message and picks the question that fits it. Every request that
 
 These pass straight through, with no question or report: **questions and chat**, such as "thanks" or a quick one-line question.
 
-Once you've shown that you know an area, its task question gets lighter (a one-tap confirmation) and then stops. The report stays.
+Once you've shown that you know an area, its task question gets lighter (a one-tap confirmation) and then stops, and its explanation gets short. The explanation and the report stay.
 
 ## Install (Claude Code)
 
@@ -108,7 +109,7 @@ create hello.js that prints hello world
 If skarp is working, you'll see:
 
 1. **A question card before any code is written**, headed "skarp", asking "Which part of the code do you expect this change to touch?" with a few options and "Skip". The first time, it also asks your level (beginner, intermediate or advanced).
-2. **Your answer releases the task.** Claude then writes `hello.js` without you retyping anything.
+2. **A short explanation, then a quiz.** Claude says where you stand (what exists, what will change) and asks you one question; then skarp asks "Ready for the AI to build it?". Say "Yes, build it" and Claude writes `hello.js` without you retyping anything.
 3. **A report at the end**, under the heading `## skarp: what changed`, with Changes, How it works, New ideas, Diagram, Tests and checks, and Check by hand.
 4. **A grade**, telling you whether your answer matched the file Claude really changed. skarp sees files that Claude writes with its file tools or with shell redirects (`>`, `>>`, `tee`). If Claude writes a file some other way, such as `cp` or `sed -i`, skarp doesn't see it, so there's no grade for that task. This is a known gap in the preview.
 
