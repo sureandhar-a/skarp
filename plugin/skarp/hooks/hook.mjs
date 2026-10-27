@@ -439,12 +439,13 @@ var TESTS_PASS = /\b(tests?|suite)\b[^.!?\n]{0,60}\b(pass(es|ing|ed)?|succeed(s|
 var HEDGED = /\b(not|n't|never|no|cannot|unless|if|whether|should|would|will|expect(ed)?|once|after you|to make)\b/i;
 var TESTS_COUNT = /\b\d+\s*\/\s*\d+\s+(?:tests?\s+)?(?:pass|passing|passed)\b|\ball\s+(?:\d+\s+)?tests?\s+(?:are\s+)?(?:pass|passing|green)\b/i;
 var FAILED = /\bfail(s|ed|ing|ures?)?\b/i;
+var failsIn = (text) => FAILED.test(text.replace(/\b(0|no|zero|without)\s+fail\w*/gi, ""));
 function untestedClaim(text, testsPassed) {
   if (testsPassed)
     return false;
-  if (testsPassed === false && FAILED.test(text))
+  if (testsPassed === false && failsIn(text))
     return false;
-  return sentences(text).some((x) => (TESTS_PASS.test(x) || TESTS_COUNT.test(x)) && !HEDGED.test(x) && !FAILED.test(x));
+  return sentences(text).some((x) => (TESTS_PASS.test(x) || TESTS_COUNT.test(x)) && !HEDGED.test(x) && !failsIn(x));
 }
 var sentences = (text) => text.split(/(?<=[.!?\n])/);
 function checkReply(text, report, observed, acted) {
@@ -1062,19 +1063,18 @@ function handle(input, home) {
   const afterReturn = (asked2, said) => {
     const skipped = said === void 0 || /^(skip|not yet)\b/i.test(said.trim());
     if (asked2.block === "X8") {
-      const fails = skipped ? ["skipped"] : checkAnswer(said, factLines(input.cwd, asked2.fact) ?? "", "");
-      log("recall", {
-        fact: asked2.fact,
-        result: skipped ? "skipped" : fails.length ? "miss" : "pass",
-        fails
-      });
+      const unsure = !skipped && saysNotYet(said);
+      const fails = skipped || unsure ? [] : checkAnswer(said, factEvidence(input.cwd, asked2.fact, ""), "");
+      const result = skipped ? "skipped" : unsure ? "not_yet" : fails.length ? "miss" : "pass";
+      log("recall", { fact: asked2.fact, result, fails });
+      if (skipped || unsure) log("owed", { block: "X8", question: asked2.question });
     } else {
       log(skipped ? "answer_skipped" : "answer", { block: "X1", text: said, ref: asked2.ref });
       if (!skipped) log("owed_cleared", { ref: asked2.ref });
     }
     const next = s.next;
     s.next = void 0;
-    const feedback = asked2.block === "X8" && !skipped ? `The user's recall: "${said}". In one line, say what in it matches the code at ${asked2.fact} and what is missing, citing the line. Never say 'correct'.
+    const feedback = asked2.block === "X8" && !skipped && !saysNotYet(said) ? `The user's recall: "${said}". In one line, say what in it matches the code at ${asked2.fact} and what is missing, citing the line. Never say 'correct'.
 ` : "";
     if (!next) {
       s.asking = void 0;
@@ -1170,7 +1170,8 @@ ${s.mode === "explain" ? "Now explain" : "Now do the user's task"}: ${s.task}
 ${rulesFor(s, lvl2 ?? profile.level ?? "intermediate")}`
       );
     }
-    const waiting = s.mode === "task" && !REPLACES.test(said) && !newTask(s, prompt);
+    const pasted = s.hear === "fill" && checkAnswer(prompt, "", s.standText ?? "").includes("copied");
+    const waiting = s.mode === "task" && !REPLACES.test(said) && (pasted || !newTask(s, prompt));
     if (waiting && s.hear === "stand") {
       s.sentBack = false;
       save();
@@ -1193,8 +1194,18 @@ ${rulesFor(s, levelNow())}`
         );
       }
       const lines = factLines(input.cwd, s.fact);
-      const evidence = lines ?? s.standText ?? "";
-      const fails = saysNotYet(prompt) ? ["not_yet"] : checkAnswer(prompt, evidence, s.standText ?? "");
+      const evidence = factEvidence(input.cwd, s.fact, s.standText ?? "");
+      if (saysNotYet(prompt)) {
+        log("hear_check", { block: "K8", fact: s.fact, result: "not_yet", reason: "not sure" });
+        log("owed", { block: "K8", question: s.blank ?? "" });
+        toBuild();
+        save();
+        return context(
+          `The user isn't sure yet (skarp keeps the gap as owed; it comes back later). Give the plain answer in two or three lines, citing ${s.fact ?? "the line"}, without judging them. Then do the user's task: ${task}
+${rulesFor(s, levelNow())}`
+        );
+      }
+      const fails = checkAnswer(prompt, evidence, s.standText ?? "");
       if (fails.includes("empty") || fails.includes("injection")) {
         save();
         return context(
@@ -1221,7 +1232,10 @@ ${rulesFor(s, levelNow())}`
         );
       }
       s.rounds = round + 1;
-      if (s.rounds >= 2) toBuild();
+      if (s.rounds >= 2) {
+        log("owed", { block: "K8", question: s.blank ?? "", reason: "missed twice" });
+        toBuild();
+      }
       save();
       return context(
         `${hearRetry(s.rounds, task)}${s.rounds >= 2 ? `
@@ -1233,6 +1247,7 @@ ${rulesFor(s, levelNow())}` : ""}`
     save();
     log("user_message", { text: prompt });
     const askLevel = !profile.level && !level;
+    let decided;
     if (s.mode === "brainstorm" && s.bs) {
       const ending = END_BS.test(said);
       if (RESUME.test(said) && !ending)
@@ -1243,14 +1258,17 @@ ${brainstormRules(s.bs.phase, s.bs.stakes)}`
       if (!REPLACES.test(said) && !ending) {
         const note = brainstormTurn(s, s.bs, prompt, home, log);
         save();
-        return context(note);
+        if (s.buildAfter && s.lastDecision) decided = note;
+        else return context(note);
       }
-      const path = closeBrainstorm(s, s.bs, home, log);
-      save();
-      if (ending)
-        return context(
-          `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`
-        );
+      if (!decided) {
+        const path = closeBrainstorm(s, s.bs, home, log);
+        save();
+        if (ending)
+          return context(
+            `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`
+          );
+      }
     }
     const lvl = level ?? profile.level ?? "intermediate";
     if (s.mode === "task" && !s.reportDue && s.task !== void 0 && STILL.test(said)) {
@@ -1281,8 +1299,11 @@ ${rulesFor(s, lvl)}`
       return context(`${owed}This continues the open task: ${s.task}
 ${rulesFor(s, lvl)}`);
     }
-    if (s.lastDecision && BUILD_IT.test(said)) {
+    if (s.lastDecision && (BUILD_IT.test(said) || decided)) {
       const decision = s.lastDecision;
+      const before = `${owed}${decided ? `${decided}
+` : ""}`;
+      s.buildAfter = false;
       Object.assign(s, fresh(`Build the brainstorm's decision: ${decision}`, "task"), {
         answer: decision,
         block: "brainstorm",
@@ -1293,7 +1314,7 @@ ${rulesFor(s, lvl)}`);
       log("hear_start", { block: "K8", light: false });
       save();
       return context(
-        `${owed}The user wants the brainstorm's decision built: ${decision}
+        `${before}The user wants the brainstorm's decision built: ${decision}
 ${hearRules(decision, levelNow(), false)}`
       );
     }
@@ -1716,6 +1737,7 @@ function brainstormTurn(s, bs, text, home, log) {
     } else note = `${idea()} Ask: "Anything else? Say done when you have listed them."`;
   } else if (bs.phase === "stress") {
     if (DECIDE.test(text) || BUILD_IT.test(text.trim())) {
+      if (BUILD_IT.test(text.trim())) s.buildAfter = true;
       if (bs.ideas < 2) {
         note = "The user wants to decide, but a decision needs at least two options. Ask for one more option, or whether doing nothing is the rival.";
       } else if (REASON.test(text) && !BUILD_IT.test(text.trim())) {
@@ -1864,6 +1886,8 @@ function factLines(cwd, fact) {
     return void 0;
   }
 }
+var KEYWORDS = /\b(function|return|const|let|var|export|import|from|default|if|else|for|while|do|switch|case|break|continue|class|new|this|self|true|false|null|undefined|none|def|async|await|try|catch|finally|throw|public|private|static|void|int|string|number|boolean|the|a|an|and|or|of|to|in|is|it)\b/gi;
+var factEvidence = (cwd, fact, fallback) => (factLines(cwd, fact) ?? fallback).replace(KEYWORDS, " ");
 function dueFor(home, cwd, sid) {
   let lines;
   try {
@@ -2120,6 +2144,7 @@ export {
   askRule,
   blankIn,
   dueFor,
+  factEvidence,
   factLines,
   handle,
   levelAnswer,

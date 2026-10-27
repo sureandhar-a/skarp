@@ -963,12 +963,13 @@ test("Hear: the walkthrough and a K8 blank before any change; the fill is checke
   assert.equal(on("s1", "Stop", { last_assistant_message: walk }), undefined);
   assert.equal(on("s1", "PreToolUse", write).hookSpecificOutput.permissionDecision, "deny");
   // a fill that names nothing on the cited line is a miss: explained another way, a new blank
-  const miss = ctx(on("s1", "UserPromptSubmit", { prompt: "it does some maths on it" }));
+  // "function" is on the cited line, but every line has it: a fill must name this line's own parts
+  const miss = ctx(on("s1", "UserPromptSubmit", { prompt: "the function does the math" }));
   assert.match(miss, /another way/);
   assert.match(miss, /Fill the gap/);
   assert.equal(on("s1", "PreToolUse", write).hookSpecificOutput.permissionDecision, "deny");
   // the second miss gets the plain answer, then the build (framework §18)
-  const plain = ctx(on("s1", "UserPromptSubmit", { prompt: "I don't know" }));
+  const plain = ctx(on("s1", "UserPromptSubmit", { prompt: "it changes the number somehow" }));
   assert.match(plain, /plain answer/);
   assert.match(plain, /Never say they were wrong/);
   assert.equal(on("s1", "PreToolUse", write), undefined);
@@ -979,6 +980,13 @@ test("Hear: the walkthrough and a K8 blank before any change; the fill is checke
   );
   assert.equal(checks[0].payload.fact, "src/a.ts:2");
   assert.ok(ledger().some((l) => l.type === "silence" && l.payload.intent === "fly"));
+  // the second miss is owed, so the gap comes back in a later chat
+  assert.equal(
+    ledger()
+      .filter((l) => l.type === "owed")
+      .at(-1).payload.reason,
+    "missed twice",
+  );
   assert.ok(!ledger().some((l) => l.payload.block === "GO"));
 });
 
@@ -1025,4 +1033,58 @@ test("a write skarp didn't see coming as a task gets the Commit question first",
     on("PreToolUse", write).hookSpecificOutput.permissionDecisionReason,
     /Which part of the code do you expect this change to touch/,
   );
+});
+
+test("Hear: 'not sure' is a not-yet debt; a pasted walkthrough is a copied fill, not a new task", () => {
+  const { on, ctx, ledger, dir, walk } = project();
+  const write = { tool_name: "Write", tool_input: { file_path: `${dir}/src/a.ts`, content: "x" } };
+  const start = (sid: string) => {
+    on(sid, "UserPromptSubmit", { prompt: "add a cap to applyDiscount in src/a.ts" });
+    on(sid, "PostToolUse", {
+      tool_name: "AskUserQuestion",
+      tool_response: { answers: { q: "src/a.ts" } },
+    });
+    on(sid, "Stop", { last_assistant_message: walk });
+  };
+  start("p1");
+  const pasted = ctx(on("p1", "UserPromptSubmit", { prompt: walk }));
+  assert.match(pasted, /another way/);
+  assert.equal(
+    ledger()
+      .filter((l) => l.type === "ask")
+      .at(-1).payload.block,
+    "K8",
+  );
+  assert.deepEqual(ledger().find((l) => l.type === "hear_check").payload.fails, ["copied"]);
+  start("p2");
+  const unsure = ctx(on("p2", "UserPromptSubmit", { prompt: "not sure tbh" }));
+  assert.match(unsure, /plain answer/);
+  assert.equal(on("p2", "PreToolUse", write), undefined);
+  const owed = ledger()
+    .filter((l) => l.type === "owed")
+    .at(-1);
+  assert.equal(owed.payload.block, "K8");
+  assert.equal(
+    ledger()
+      .filter((l) => l.type === "hear_check")
+      .at(-1).payload.result,
+    "not_yet",
+  );
+});
+
+test("brainstorm: 'build it' before the decision starts the build once the decision is recorded", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "I have a rough idea: cache prices in memory" });
+  on("UserPromptSubmit", { prompt: "or skip the cache at checkout" });
+  on("UserPromptSubmit", { prompt: "done" });
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "build it" })), /Why|decide|options/);
+  const built = ctx(
+    on("UserPromptSubmit", {
+      prompt: "I'm going with skipping the cache at checkout because the price must be fresh",
+    }),
+  );
+  assert.match(built, /recorded the user's decision/);
+  assert.match(built, /## skarp: where you stand/);
 });

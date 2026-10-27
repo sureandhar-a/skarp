@@ -91,6 +91,7 @@ interface Session {
   explainBack?: boolean; // an explanation ended with skarp's "this works because ___"
   bs?: Brainstorm; // the open brainstorm
   lastDecision?: string; // the last brainstorm's decision: "build it" starts it as a task
+  buildAfter?: boolean; // "build it" came before the decision: the build starts once it's recorded
   check?: string; // for a bug: what the user says would show it's fixed
   closing?: boolean; // the user said it's done: the report is due this turn
   lastExplain?: string; // the last explanation's request: "build it" starts a task from it
@@ -346,14 +347,13 @@ export function handle(input: HookInput, home: string): object | undefined {
   const afterReturn = (asked: NonNullable<Session["asking"]>, said: string | undefined) => {
     const skipped = said === undefined || /^(skip|not yet)\b/i.test(said.trim());
     if (asked.block === "X8") {
-      const fails = skipped
-        ? ["skipped"]
-        : checkAnswer(said, factLines(input.cwd, asked.fact) ?? "", "");
-      log("recall", {
-        fact: asked.fact,
-        result: skipped ? "skipped" : fails.length ? "miss" : "pass",
-        fails,
-      });
+      // "not sure" is a "not yet" debt (D54), not a miss
+      const unsure = !skipped && saysNotYet(said);
+      const fails =
+        skipped || unsure ? [] : checkAnswer(said, factEvidence(input.cwd, asked.fact, ""), "");
+      const result = skipped ? "skipped" : unsure ? "not_yet" : fails.length ? "miss" : "pass";
+      log("recall", { fact: asked.fact, result, fails });
+      if (skipped || unsure) log("owed", { block: "X8", question: asked.question });
     } else {
       log(skipped ? "answer_skipped" : "answer", { block: "X1", text: said, ref: asked.ref });
       if (!skipped) log("owed_cleared", { ref: asked.ref });
@@ -361,7 +361,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     const next = s.next;
     s.next = undefined;
     const feedback =
-      asked.block === "X8" && !skipped
+      asked.block === "X8" && !skipped && !saysNotYet(said)
         ? `The user's recall: "${said}". In one line, say what in it matches the code at ${asked.fact} and what is missing, citing the line. Never say 'correct'.\n`
         : "";
     if (!next) {
@@ -467,7 +467,10 @@ export function handle(input: HookInput, home: string): object | undefined {
       );
     }
     // a different task while Hear is under way starts fresh
-    const waiting = s.mode === "task" && !REPLACES.test(said) && !newTask(s, prompt);
+    // a message that copies the walkthrough is an answer to it (a copied fill), not a new task
+    const pasted =
+      s.hear === "fill" && checkAnswer(prompt, "", s.standText ?? "").includes("copied");
+    const waiting = s.mode === "task" && !REPLACES.test(said) && (pasted || !newTask(s, prompt));
     // the walkthrough hasn't come yet: it comes first, whatever the message
     if (waiting && s.hear === "stand") {
       s.sentBack = false;
@@ -491,10 +494,18 @@ export function handle(input: HookInput, home: string): object | undefined {
       }
       // the cited line as the code says it now; if it can't be read, the walkthrough stands in
       const lines = factLines(input.cwd, s.fact);
-      const evidence = lines ?? s.standText ?? "";
-      const fails = saysNotYet(prompt)
-        ? ["not_yet"]
-        : checkAnswer(prompt, evidence, s.standText ?? "");
+      const evidence = factEvidence(input.cwd, s.fact, s.standText ?? "");
+      // "I don't know" is a "not yet" debt (framework D54): owed, the plain answer, then the build
+      if (saysNotYet(prompt)) {
+        log("hear_check", { block: "K8", fact: s.fact, result: "not_yet", reason: "not sure" });
+        log("owed", { block: "K8", question: s.blank ?? "" });
+        toBuild();
+        save();
+        return context(
+          `The user isn't sure yet (skarp keeps the gap as owed; it comes back later). Give the plain answer in two or three lines, citing ${s.fact ?? "the line"}, without judging them. Then do the user's task: ${task}\n${rulesFor(s, levelNow())}`,
+        );
+      }
+      const fails = checkAnswer(prompt, evidence, s.standText ?? "");
       if (fails.includes("empty") || fails.includes("injection")) {
         save();
         return context(
@@ -519,7 +530,11 @@ export function handle(input: HookInput, home: string): object | undefined {
         );
       }
       s.rounds = round + 1;
-      if (s.rounds >= 2) toBuild();
+      // the second miss gets the plain answer and the work goes on; the gap comes back later
+      if (s.rounds >= 2) {
+        log("owed", { block: "K8", question: s.blank ?? "", reason: "missed twice" });
+        toBuild();
+      }
       save();
       return context(
         `${hearRetry(s.rounds, task)}${s.rounds >= 2 ? `\n${rulesFor(s, levelNow())}` : ""}`,
@@ -531,6 +546,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     save();
     log("user_message", { text: prompt });
     const askLevel = !profile.level && !level;
+    let decided: string | undefined; // the decision just recorded, when the build follows it
     // an open brainstorm: every message is part of it until a decision, or "actually / new task"
     if (s.mode === "brainstorm" && s.bs) {
       const ending = END_BS.test(said);
@@ -541,15 +557,19 @@ export function handle(input: HookInput, home: string): object | undefined {
       if (!REPLACES.test(said) && !ending) {
         const note = brainstormTurn(s, s.bs, prompt, home, log);
         save();
-        return context(note);
+        // "build it" came before the decision: now that it's recorded, the build starts (below)
+        if (s.buildAfter && s.lastDecision) decided = note;
+        else return context(note);
       }
-      const path = closeBrainstorm(s, s.bs, home, log);
-      save();
-      // "end brainstorm" only ends it; "actually, ..." goes on as new work
-      if (ending)
-        return context(
-          `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`,
-        );
+      if (!decided) {
+        const path = closeBrainstorm(s, s.bs, home, log);
+        save();
+        // "end brainstorm" only ends it; "actually, ..." goes on as new work
+        if (ending)
+          return context(
+            `The user ended the brainstorm without a decision${path ? `; it is saved to ${path}` : ""}. In two lines, list the ideas still open and say that "continue the brainstorm on <topic>" picks it up again. No praise.`,
+          );
+      }
     }
     // an open task carries on across turns ("still failing", "try the other file") until it's done
     const lvl = level ?? profile.level ?? "intermediate";
@@ -584,8 +604,10 @@ export function handle(input: HookInput, home: string): object | undefined {
       return context(`${owed}This continues the open task: ${s.task}\n${rulesFor(s, lvl)}`);
     }
     // "build it" after a brainstorm: its decision is the plan, so skarp doesn't ask twice
-    if (s.lastDecision && BUILD_IT.test(said)) {
+    if (s.lastDecision && (BUILD_IT.test(said) || decided)) {
       const decision = s.lastDecision;
+      const before = `${owed}${decided ? `${decided}\n` : ""}`;
+      s.buildAfter = false;
       Object.assign(s, fresh(`Build the brainstorm's decision: ${decision}`, "task"), {
         answer: decision,
         block: "brainstorm",
@@ -596,7 +618,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       log("hear_start", { block: "K8", light: false });
       save();
       return context(
-        `${owed}The user wants the brainstorm's decision built: ${decision}\n${hearRules(decision, levelNow(), false)}`,
+        `${before}The user wants the brainstorm's decision built: ${decision}\n${hearRules(decision, levelNow(), false)}`,
       );
     }
     // brainstorm: your idea first, then a senior's questions; the process, ideas and outcome are kept
@@ -1102,6 +1124,7 @@ function brainstormTurn(
     } else note = `${idea()} Ask: "Anything else? Say done when you have listed them."`;
   } else if (bs.phase === "stress") {
     if (DECIDE.test(text) || BUILD_IT.test(text.trim())) {
+      if (BUILD_IT.test(text.trim())) s.buildAfter = true;
       if (bs.ideas < 2) {
         note =
           "The user wants to decide, but a decision needs at least two options. Ask for one more option, or whether doing nothing is the rival.";
@@ -1293,7 +1316,8 @@ function explainsCode(reply: string): string[] {
   return ["What the code does now", "What will change"]
     .filter((n) => body(n) && !/[\w-]+\.[a-z]{1,4}\b/i.test(body(n)))
     .map(
-      (n) => `Under \`### ${n}\`, explain it with the files involved (file:line), before the blank.`,
+      (n) =>
+        `Under \`### ${n}\`, explain it with the files involved (file:line), before the blank.`,
     );
 }
 
@@ -1323,6 +1347,13 @@ export function factLines(cwd: string | undefined, fact: string | undefined): st
     return undefined;
   }
 }
+
+// Words every line of code has: a fill must name something of this line, not "function" or "return"
+const KEYWORDS =
+  /\b(function|return|const|let|var|export|import|from|default|if|else|for|while|do|switch|case|break|continue|class|new|this|self|true|false|null|undefined|none|def|async|await|try|catch|finally|throw|public|private|static|void|int|string|number|boolean|the|a|an|and|or|of|to|in|is|it)\b/gi;
+// The evidence a fill or recall is checked against: the cited line's own names and values
+export const factEvidence = (cwd: string | undefined, fact: string | undefined, fallback: string) =>
+  (factLines(cwd, fact) ?? fallback).replace(KEYWORDS, " ");
 
 // What the opening Return brings back (framework §6 Return, rule 3), from earlier chats in this
 // project: a fill that passed is due for recall in a new form (X8); else a question put off (X1)
