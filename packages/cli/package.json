@@ -1,0 +1,27 @@
+{
+  "name": "skarp-copilot",
+  "version": "0.2.0-preview.3",
+  "description": "skarp for GitHub Copilot: one command sets up the hooks that ask for your view first, check the AI's work and keep a local record.",
+  "license": "MIT",
+  "author": "sureandhar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sureandhar-a/skarp.git"
+  },
+  "type": "module",
+  "bin": {
+    "skarp": "bin/skarp.mjs"
+  },
+  "files": [
+    "bin/skarp.mjs",
+    "hook.mjs"
+  ],
+  "engines": {
+    "node": ">=24.2"
+  },
+  "scripts": {
+    "build:cli": "node -e \"require('node:fs').copyFileSync('../../plugin/skarp/hooks/hook.mjs','hook.mjs')\"",
+    "test": "pnpm build:cli && node --test \"bin/*.test.mjs\"",
+    "prepack": "pnpm build:cli"
+  }
+}

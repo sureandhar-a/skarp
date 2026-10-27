@@ -1,5 +1,5 @@
 {
-  "description": "skarp: Commit question, slice cap, plan grade and checked report.",
+  "description": "skarp: your view first, checked reports, explanations and brainstorms, plan grade, local record.",
   "hooks": {
     "UserPromptSubmit": [
       {

@@ -6,7 +6,7 @@
     {
       "name": "skarp",
       "source": "./plugin/skarp",
-      "description": "Plan first, capped slices, graded plans, checked explanations and diagrams."
+      "description": "Your view first, checked reports, explanations and brainstorms, graded plans, a local record."
     }
   ]
 }

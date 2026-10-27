@@ -1,30 +1,43 @@
-# skarp for Claude Code (preview)
+# skarp for Claude Code and Copilot (preview)
 
-**Own what you ship.** skarp enforces "think first" with hooks and grades your plan against what the AI actually changed. It doesn't just ask the AI nicely.
+**Own what you ship.** skarp enforces "think first" with hooks and checks the AI's work in code. It doesn't just ask the AI nicely.
 
 ## What it does
 
-1. **Asks before the AI starts.** When you give Claude Code a task, skarp holds it and asks one question, for example "Which part of the code do you expect this change to touch?". Your task is saved, so you don't retype it. Your answer releases it.
-2. **Caps each slice.** The AI may change at most 3 files per task. Writes past that are refused with a reason.
-3. **Grades your plan.** When the AI finishes, skarp compares your answer with the files the AI really changed. You get "your plan matched the change" or "the change went where your plan didn't: …". Never "correct".
-4. **Ends every task with a checked explanation.** The AI must finish with a `## skarp: what changed` report:
-   - Changes
-   - How it works
-   - New ideas
-   - Diagram (plain text)
-   - Tests and checks
-   - Check by hand
+skarp picks one of three ways of working from your message.
 
-   skarp checks that every section is there, that there's no praise, that nothing claims a change the files don't contain, and that "tests pass" appears only if a test command really ran and passed. If a check fails, the AI is sent back once to fix it. If it still fails, the report is owed on your next message.
-5. **Explains at your level.** The first question also asks if you're a beginner, intermediate or advanced. You can change it any time by writing `level advanced` (or another level) in a message.
+### A task: "fix the login bug", "add a logout button"
 
-Chat and quick questions are never held. You can always reply "skip" or "not yet"; both are logged, never locked.
+1. **Asks before the AI starts.** skarp holds the task and asks one question, such as "Where do you think the bug is?". The options are fixed hints from skarp, never the AI's guesses, and free text always works. A card with the AI's own options or reworded question is refused. Bugs also get "What would show it's fixed?". Your task is saved, so you don't retype it.
+2. **Walks you through it before the AI builds (Hear).** On ground you haven't proven, the AI writes `## skarp: where you stand`: your view, what the code does now (file:line), what will change, the gap, and **Fill the gap**: one sentence ending in ___ with the line that shows the answer. skarp checks your fill against that line and refuses writes until you fill it or say "not yet" (kept as owed). A miss gets another explanation and a new blank; a second miss gets the plain answer, then the build. A proven area gets a short walkthrough, then none (logged).
+3. **Keeps the task open until it's done.** "Still failing" continues the same task: no new question. While the fix isn't finished, the AI ends with a short status (found so far, tried, next step) instead of the report. Saying "fixed" or "works now" asks for the report.
+4. **Grades your plan once, at the end (Fly).** skarp compares your answer with every file the task changed. You get "your plan matched the change" or "the change went where your plan didn't: …". Never "correct". There's no file limit.
+5. **Ends with a checked report** under `## skarp: what changed`: Changes, How it works, New ideas, Diagram, Tests and checks, Check by hand, Kept, Not yet. The next chat in this project opens with a recall of a past fill, or a question you put off (Return). skarp checks that every section is there, that there's no praise, that nothing claims a change the files don't contain, and that "tests pass" appears only if a test really ran and passed. If a check fails, the AI is sent back once.
+
+### An explanation: "explain the repo to me", "how does the cache work?"
+
+1. **Your guess first:** "What do you think it does now, and which part matters most to you?"
+2. **A checked explanation** under `## skarp: explained`: Big picture, Diagram, Key pieces, How a request flows, New ideas, Where to start reading, Your guess vs the code, Your turn.
+3. **Your turn:** it ends with "In your own words: this works because ___". Your answer is logged, and the AI says what matches the code and what's missing.
+4. No file changes; say "build it" to turn it into a task.
+
+### A brainstorm: "can we brainstorm on caching?", "I have a rough idea: …"
+
+The AI acts as a senior colleague who asks questions and stress-tests your ideas, built on the research in the [main README](../../README.md#brainstorm).
+
+1. **You first.** Your idea comes before any of the AI's ideas. Say "your ideas first" to skip (logged).
+2. **Quiet while you list.** The AI only acknowledges and asks "anything else?" until you say "done".
+3. **Stress test.** At most two questions per turn, each quoting your exact words; each idea restated neutrally before it's judged; every verdict (holds / risky / doesn't hold / unknown) backed by evidence. "Great idea" with nothing behind it is sent back.
+4. **You decide.** A decision needs at least two options and your reason in your own words. Hard-to-undo topics (schema, auth, payments, deletes) get a pre-mortem first.
+5. **Kept.** The whole conversation, every idea (who raised it, for and against, verdict, evidence) and the decision are saved. "Continue the brainstorm on X" brings it back; "build it" starts the decision as a task without asking again (it still gets the walkthrough).
+
+Chat is never held. "What does X do?" asks for your guess first, but a quick question while it waits goes ahead. You can always reply "skip" or "not yet"; both are logged, never locked.
 
 ## Install
 
 ### Claude Code
 
-One install covers all Claude Code surfaces: the terminal (CLI), the Claude desktop app's Code tab and the Claude Code extension in VS Code. Run these in a terminal:
+One install covers the terminal (CLI), the Claude desktop app's Code tab and the Claude Code extension in VS Code:
 
 ```bash
 claude plugin marketplace add sureandhar-a/skarp
@@ -34,51 +47,52 @@ claude plugin marketplace add sureandhar-a/skarp
 claude plugin install skarp@skarp-tools
 ```
 
-Remove it with `claude plugin uninstall skarp@skarp-tools`.
+Remove it with `claude plugin uninstall skarp@skarp-tools`. Needs Node 24.2 or newer on your PATH (`node --version`).
 
-Needs Node 24.2 or newer on your PATH (`node --version`). On older Node the hook does nothing.
+### GitHub Copilot in VS Code (experimental)
 
-### VS Code Copilot (experimental)
+```bash
+npx skarp-copilot setup
+```
 
-Copilot agent mode runs the same hook script through a hooks file in your project.
+This copies skarp's hook to `~/.skarp/bin/` and writes one user-level hooks file, `~/.copilot/hooks/skarp.json`, for all your projects. It checks Node first and installs nothing if Node is too old. Then open Copilot Chat in any mode and send `create hello.js that prints hello world`.
 
-1. Clone this repo: `git clone https://github.com/sureandhar-a/skarp.git ~/skarp`
-2. In your project, create the hooks file pointing at the script:
-   ```bash
-   mkdir -p .github/hooks && sed "s#SKARP_HOOK#$HOME/skarp/plugin/skarp/hooks/hook.mjs#" ~/skarp/plugin/skarp/copilot/skarp.json > .github/hooks/skarp.json
-   ```
-3. Turn on hooks and the question card in the project's `.vscode/settings.json` (VS Code 1.110 or newer):
-   ```json
-   { "chat.useHooks": true, "chat.askQuestions.enabled": true }
-   ```
-4. Use Copilot Chat in **Agent** mode.
+If no question appears, your VS Code may use the older Local runtime. In your project, run:
 
-How it differs from Claude Code:
-- skarp's question uses Copilot's own question card. Copilot may reword it (often as a yes/no "May I proceed?") and shows one question per card, so the Level question is not asked there. Set it by writing `level beginner` (or another level) in a message.
-- Copilot doesn't pass skarp's notes on your message to the AI. skarp's rules reach it only when a tool is refused, so the report can be missing.
-- skarp's end-of-task messages (the grade, "report checked") show under Copilot's reply as a "Warning from Stop hook". They are also in `~/.skarp/ledger/hooks.jsonl`.
-- Copilot can write several files in one patch. skarp counts each file in it (renames count both names) and refuses the whole patch if it goes past the cap.
+```bash
+npx skarp-copilot setup --project
+```
 
-To remove it, delete `.github/hooks/skarp.json`.
+This writes `.github/hooks/skarp.json` and switches on `chat.useHooks` in `.vscode/settings.json`, keeping your other settings. Reload VS Code.
+
+To check it, run `npx skarp-copilot status`. It shows what's installed and whether your last task, explanation or brainstorm went through each step, with field names and ✓/✗ only, never what you wrote. Update with `npx skarp-copilot@latest setup`. Remove with `npx skarp-copilot remove` (add `--all` to delete your records too).
+
+How Copilot differs from Claude Code:
+- Copilot ignores what a hook returns when you send a message, so skarp gives the AI its rules when the session starts (on VS Code 1.143 that comes after your first message) and enforces them by refusing tools and sending replies back.
+- Copilot shows one question per card, so set your level by writing `level beginner` (or another level) in a message.
+- On VS Code 1.143, Copilot doesn't show skarp's end-of-task messages; run `npx skarp-copilot status` to see the last check and grade.
+- When skarp sends the AI back, Copilot passes skarp's note to the AI as a chat message, so you may see it in the chat.
 
 ## What it keeps, and where
 
 Everything stays on your machine in `~/.skarp`, outside your project, so the AI doesn't read it:
 
-- `sessions/`: the held task and the files touched, per Claude Code session
-- `ledger/hooks.jsonl`: every question, answer, skip, grade and report check, with timestamps
+- `ledger/hooks.jsonl`: every question, answer, skip, grade and check, with the project folder and task
+- `reports/`: every report and explanation, one Markdown file each
+- `brainstorms/<id>/`: `log.jsonl` (the whole conversation and every idea) and `summary.md` (ideas, decision, open questions)
+- `sessions/`: the open work per session
 - `profile.json`: your level
 
-There's no account, no network and no telemetry. To delete everything, remove `~/.skarp`.
+There's no account, no network and no telemetry. To delete everything, remove `~/.skarp` (or run `npx skarp-copilot remove --all`).
 
 ## Known gaps in this preview
 
-- **Claude Code, plus VS Code Copilot as experimental.** Copilot's tool names and shapes change between releases, so its file detection may miss a new tool. Antigravity and Codex are coming next; see [What's next](../../README.md#whats-next).
-- **Some file writes through the shell are not seen.** skarp caps and grades files written with the Edit, Write, MultiEdit and NotebookEdit tools, and with shell redirects and `tee` (`> file`, `>> file`, `tee file`). Other shell writes, such as `cp`, `mv`, `sed -i` or a script that writes files, are not capped or graded.
-- **The grade is word matching** between your answer and the changed files, not understanding. The threshold is a first guess.
-- **The report's teaching quality is written by the model and not graded.** skarp checks that the sections are there, in order and not empty, and catches common praise and test claims. It doesn't check how well the report teaches.
-- **Test results are read from the exit code.** A test run piped into another command (`npm test | tail`) counts as unknown, so "tests pass" is sent back.
-- **The cap counts files, not steps.** If the AI deletes a file in one call and is then refused, the tree can be left half-done for the AI to fix.
+- **Claude Code, plus Copilot as experimental.** Copilot's tool names and shapes change between releases, so its file detection may miss a new tool. Whether hooks run in Copilot's Ask mode is not documented; `npx skarp-copilot status` shows whether they did.
+- **Some file writes through the shell are not seen.** skarp sees the Edit, Write, MultiEdit and NotebookEdit tools, shell redirects and `tee`. `cp`, `mv`, `sed -i` or a script that writes files are not graded.
+- **The grade is word matching** between your answer and the changed files, not understanding.
+- **Checks are on shape and wording, not truth.** skarp checks sections, quotes, evidence markers and praise. It doesn't check that the AI's verdicts or explanations are right.
+- **Telling a follow-up from a new task is a guess:** a message with task words that names a new file, or shares no telling word with the open task, starts a new task. "Actually…" always does.
+- **Test results are read from the exit code.** A piped test run (`npm test | tail`) counts as unknown.
 - **Parallel tool calls** in one session can race on skarp's state file.
-- **Hooks can be turned off** by the user (`disableAllHooks`), and then skarp does nothing.
+- **Hooks can be turned off** by you or your organisation, and then skarp does nothing.
 - **skarp never blocks the agent on its own failure.** If the hook breaks, the agent carries on.

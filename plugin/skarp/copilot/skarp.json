@@ -1,5 +1,17 @@
 {
+  "version": 1,
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"SKARP_HOOK\" SessionStart",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
@@ -28,6 +40,17 @@
           {
             "type": "command",
             "command": "node \"SKARP_HOOK\" PostToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"SKARP_HOOK\" PostToolUseFailure",
             "timeout": 10
           }
         ]
