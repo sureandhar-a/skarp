@@ -175,6 +175,35 @@ export function status({ home, cwd, out = console.log } = {}) {
         `  ${mark(!n)} last ${ref.payload.check} check: ${n ? `${n} to fix${failed.length ? ` (${failed.join(", ")})` : ""}` : "passed"}`,
       );
     }
+    // Hear: the walkthrough and the fill's check, as results only; never the fill's words
+    const hear = t.filter((l) => l.type === "hear").at(-1);
+    const fill = t.filter((l) => l.type === "hear_check").at(-1);
+    const quietHear = t.some((l) => l.type === "silence" && l.payload.intent === "hear");
+    if (quietHear) out("  walkthrough: not needed (you've shown this area before)");
+    else if (hear || fill) {
+      const fixes = hear?.payload.fixes ?? [];
+      const given = fill || (hear && !hear.payload.not_run && !fixes.length);
+      out(
+        `  ${mark(Boolean(given))} walkthrough: ${given ? "given" : hear.payload.not_run ? `not checked (${hear.payload.not_run})` : `${fixes.length} to fix`}`,
+      );
+      const r = fill?.payload;
+      if (!r) out("  fill: waiting for your answer");
+      else if (r.result === "pass") out(`  ✓ fill: matched the code at ${r.fact}`);
+      else if (r.result === "not_yet") out("  fill: not yet (kept as owed)");
+      else
+        out(
+          `  ✗ fill: missed${r.round >= 1 ? ", plain answer given" : ", explained another way"} (${r.fact})`,
+        );
+    }
+    // the opening Return: a recall of an earlier fill, or a question put off before
+    const recall = t.filter((l) => l.type === "recall").at(-1);
+    if (recall)
+      out(
+        `  ${recall.payload.result === "skipped" ? "-" : mark(recall.payload.result === "pass")} recall: ${{ pass: "matched", miss: "missed", skipped: "skipped" }[recall.payload.result]} (${recall.payload.fact})`,
+      );
+    const owed = t.filter((l) => l.payload?.block === "X1").at(-1);
+    if (owed)
+      out(`  owed question from before: ${owed.type === "answer" ? "answered" : "skipped"}`);
     // skarp's own grade wording; it names files, never what you wrote
     const grade = t.filter((l) => l.type === "outcome").at(-1);
     if (grade?.payload.text) out(`  grade: ${grade.payload.text.replace(/^skarp: /, "")}`);

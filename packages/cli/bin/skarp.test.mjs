@@ -67,6 +67,9 @@ test("status reads the ledger without printing what anyone wrote; remove deletes
       line("ask", { block: "A1" }),
       line("answer", { text: "my private plan" }),
       line("report", { path: "/x.md" }),
+      line("recall", { fact: "src/a.ts:2", result: "pass" }),
+      line("hear", { fixes: [] }),
+      line("hear_check", { result: "miss", round: 0, fact: "src/a.ts:2", text: "my private fill" }),
     ].join("\n"),
   );
   const q = quiet();
@@ -75,6 +78,10 @@ test("status reads the ledger without printing what anyone wrote; remove deletes
   assert.match(text, /asked ✓ {2}answered ✓ {2}report saved ✓/);
   assert.match(text, /Stop fields: sessionId, transcriptPath/);
   assert.doesNotMatch(text, /my private plan/);
+  assert.match(text, /✓ walkthrough: given/);
+  assert.match(text, /✗ fill: missed, explained another way \(src\/a\.ts:2\)/);
+  assert.match(text, /✓ recall: matched \(src\/a\.ts:2\)/);
+  assert.doesNotMatch(text, /my private fill/);
   remove({ ...d, out: quiet().out });
   assert.ok(!existsSync(p.userHooks));
   assert.ok(!existsSync(p.hook));
