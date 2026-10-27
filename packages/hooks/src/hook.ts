@@ -17,6 +17,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { toLedgerLine } from "@skarp/core";
 import {
   ALIGNED,
+  checkAnswer,
   checkReply,
   classifyMessage,
   conceptOf,
@@ -50,11 +51,15 @@ import {
   type Mode,
   optionsOk,
   type Phase,
+  PROCEED_HINTS,
+  PROCEED_QUESTION,
   parseMap,
   RESUME,
   type ReportShape,
+  STAND_REPORT,
   TASK_REPORT,
   UNLOCK,
+  understandRules,
 } from "./modes.ts";
 
 export type Level = "beginner" | "intermediate" | "advanced";
@@ -81,6 +86,12 @@ interface Session {
   closing?: boolean; // the user said it's done: the report is due this turn
   lastExplain?: string; // the last explanation's request: "build it" starts a task from it
   blockReason?: string; // skarp's last Stop send-back: Copilot replays it as a user prompt
+  // understand first: view (skarp's question) → stand (the AI's where-you-stand) → quiz → ready
+  // (go ahead?) → build. The explanation is never skipped; only answering is.
+  understand?: "view" | "stand" | "quiz" | "ready" | "build";
+  light?: boolean; // the area has faded to a confirm: a short where-you-stand
+  rounds?: number; // "didn't understand" rounds so far
+  standText?: string; // the AI's where-you-stand, for the quiz answer's copy check
 }
 
 interface Brainstorm {
@@ -283,6 +294,47 @@ export function handle(input: HookInput, home: string): object | undefined {
   // Copilot drops what a prompt hook returns, so the standing rules go in once per session
   if (event === "SessionStart") return startContext(standingRules(profile.level ?? "intermediate"));
   const setLevel = (level: Level) => write(join(home, "profile.json"), { ...profile, level });
+  const levelNow = (): Level =>
+    read<{ level?: Level }>(join(home, "profile.json"))?.level ?? "intermediate";
+  // after the first answer (or its skip), the explanation comes before any change
+  // (docs/plan/understand-first.md): skipping the question skips answering, never the explanation
+  const startUnderstand = (): string | undefined => {
+    if (s.mode !== "task" || s.understand !== "view") return undefined;
+    Object.assign(s, { understand: "stand", rounds: 0, sentBack: false });
+    log("understand_start", { light: Boolean(s.light) });
+    return understandRules(s.answer, levelNow(), Boolean(s.light));
+  };
+  // the answer to "Ready for the AI to build it?": build, explain again, or skip (logged)
+  const proceed = (said: string): string => {
+    const t = said.trim();
+    const choice = /^(1\b|yes|y\b|go\b|go ahead|build|proceed|ok\b|okay|ready|sure|do it)/i.test(t)
+      ? "build"
+      : /^(4\b|skip|not yet)/i.test(t)
+        ? "skip"
+        : /^(2\b|i didn'?t understand|didn'?t understand|no\b)/i.test(t)
+          ? "again"
+          : "confused";
+    log("proceed", { choice, round: s.rounds ?? 0 });
+    if (choice === "build" || choice === "skip") {
+      if (choice === "skip") log("understand_skipped", { reason: "proceed skipped" });
+      Object.assign(s, { understand: "build", asking: undefined, sentBack: false });
+      return `${choice === "skip" ? "The user skipped the check (skarp logs it as owed)." : "The user is ready."} Now do the user's task: ${s.task}\n${rulesFor(s, levelNow())}`;
+    }
+    const rounds = (s.rounds ?? 0) + 1;
+    const about =
+      choice === "confused" && !/^(3\b|still confused about a part)/i.test(t) ? `: "${t}"` : "";
+    const unsure = choice === "again" ? "didn't understand" : `is still confused${about}`;
+    if (rounds >= 3) {
+      Object.assign(s, {
+        rounds,
+        understand: "ready",
+        asking: { block: "GO", question: PROCEED_QUESTION, level: false },
+      });
+      return `The user ${unsure}. Give the plain answer now: what the code does and what will change, in simple words with one example. Do not change files.\n${proceedRule()}`;
+    }
+    Object.assign(s, { rounds, understand: "quiz", asking: undefined, sentBack: false });
+    return `The user ${unsure}. Explain it again a different way: simpler words and a concrete example from this code${about ? ", focused on what they named" : ""}. Then ask one new quiz question and stop. Do not change files.`;
+  };
 
   if (event === "UserPromptSubmit") {
     try {
@@ -326,6 +378,11 @@ export function handle(input: HookInput, home: string): object | undefined {
     const aside = (SMALL_TALK.test(said) && said.split(/\s+/).length <= 3) || said.endsWith("?");
     // a waiting "your guess first" doesn't hold up a quick question: the explanation is dropped
     const dropExplain = asked?.block === "EX1" && aside;
+    if (asked?.block === "GO" && !REPLACES.test(said)) {
+      const note = proceed(said);
+      save();
+      return context(note);
+    }
     if (asked && !REPLACES.test(said) && !dropExplain) {
       // "level advanced" on its own sets the level; it is not the answer
       if (level && !said.replace(LEVEL_SET, "").replace(/[\s.,!]/g, ""))
@@ -358,9 +415,55 @@ export function handle(input: HookInput, home: string): object | undefined {
         save();
         return context(note);
       }
+      const understand = startUnderstand();
       save();
+      if (understand)
+        return context(
+          `The user's answer to skarp's question "${asked.question}": ${answer}\n${understand}`,
+        );
       return context(
         `${skipped ? "The user skipped skarp's question." : `The user's answer to skarp's question "${asked.question}": ${answer}`}\n${s.mode === "explain" ? "Now explain" : "Now do the user's task"}: ${s.task}\n${rulesFor(s, lvl ?? profile.level ?? "intermediate")}`,
+      );
+    }
+    // a different task while understanding is under way starts fresh
+    const waiting = s.mode === "task" && !REPLACES.test(said) && !newTask(s, prompt);
+    // the explanation hasn't come yet: it comes first, whatever the message
+    if (waiting && s.understand === "stand") {
+      s.sentBack = false;
+      save();
+      log("understand_waiting", {});
+      return context(
+        `Reply to the user's message briefly. skarp still needs the explanation before any change.\n${understandRules(s.answer, levelNow(), Boolean(s.light))}`,
+      );
+    }
+    // the user's answer to the AI's quiz: feedback, then "ready to build?"
+    if (waiting && s.understand === "quiz") {
+      if (/^(skip|not yet)\b/i.test(said)) {
+        s.understand = "build";
+        log("understand_skipped", { reason: "quiz skipped" });
+        save();
+        return context(
+          `The user skipped the quiz (skarp logs it as owed). Now do the user's task: ${s.task}\n${rulesFor(s, levelNow())}`,
+        );
+      }
+      const fails = checkAnswer(prompt, s.standText ?? "", s.standText ?? "");
+      log("quiz_answer", { text: prompt, fails, round: s.rounds ?? 0 });
+      if (fails.some((f) => f === "copied" || f === "empty" || f === "injection")) {
+        s.rounds = (s.rounds ?? 0) + 1;
+        save();
+        return context(
+          `The user's answer ${fails.includes("copied") ? "repeats your own words" : "doesn't answer the quiz"}. Without judging them, explain the point again a different way and ask one new quiz question. Do not change files.`,
+        );
+      }
+      Object.assign(s, {
+        understand: "ready",
+        asking: { block: "GO", question: PROCEED_QUESTION, level: false },
+        sentBack: false,
+      });
+      log("ask", { block: "GO", reason: "understand first: ready to build?" });
+      save();
+      return context(
+        `The user's answer to your quiz: "${prompt}"\nIn one or two lines, say what in it matches the code and what is missing, citing file:line. Never say 'correct'; no praise.\n${proceedRule()}`,
       );
     }
     Object.assign(s, { ran: false, testsPassed: undefined }); // a run counts for this turn only
@@ -430,9 +533,11 @@ export function handle(input: HookInput, home: string): object | undefined {
         lastDecision: undefined,
       });
       log("answer", { block: "brainstorm", text: decision, via: "decision" });
+      Object.assign(s, { understand: "stand", rounds: 0 });
+      log("understand_start", { light: false });
       save();
       return context(
-        `${owed}The user wants the brainstorm's decision built: ${decision}\n${rulesFor(s, level ?? profile.level ?? "intermediate")}`,
+        `${owed}The user wants the brainstorm's decision built: ${decision}\n${understandRules(decision, levelNow(), false)}`,
       );
     }
     // brainstorm: your idea first, then a senior's questions; the process, ideas and outcome are kept
@@ -483,11 +588,12 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
     const outcomes = readOutcomes(home);
     const concept = matchConcept(prompt, [...new Set(outcomes.map((o) => o.concept))]);
+    const rung = concept ? rungFor(concept, outcomes) : 0;
     const step = decideNextStep({
       pause: "start",
       text: prompt,
       satisfiedIntents: ["orient"], // picking a piece to study needs the in-app chat; not in hooks
-      rung: concept ? rungFor(concept, outcomes) : 0,
+      rung,
     });
     if (step.action === "continue" && step.silence) log("silence", step.silence);
     if (step.action !== "ask" && classifyMessage(prompt) !== "task") {
@@ -498,8 +604,17 @@ export function handle(input: HookInput, home: string): object | undefined {
     const after = s.lastExplain && BUILD_IT.test(said) ? s.lastExplain : undefined;
     const built = after ? `${prompt} (what was explained: ${after})` : prompt;
     const from = after ? `This builds on the explanation the user asked for: ${after}\n` : "";
-    Object.assign(s, fresh(built, "task"), { lastExplain: undefined });
+    // a proven area skips the question but still gets a short explanation first
+    Object.assign(s, fresh(built, "task"), {
+      lastExplain: undefined,
+      understand: step.action === "ask" ? "view" : "stand",
+      light: rung >= 1,
+    });
     let ask = "";
+    if (s.understand === "stand") {
+      log("understand_start", { light: true });
+      ask = `${understandRules(undefined, levelNow(), true)}\n`;
+    }
     if (step.action === "ask") {
       s.asking = { block: step.block.id, question: step.block.question_text, level: askLevel };
       s.block = step.block.id;
@@ -545,6 +660,16 @@ export function handle(input: HookInput, home: string): object | undefined {
     // question 1 is skarp's, question 2 (when asked) is the level, free text included
     const answers = readAnswers(input.tool_response);
     const commit = answers[0];
+    const post = (note: string) => ({
+      additionalContext: note,
+      hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: note },
+    });
+    if (asked.block === "GO") {
+      // no card here: fail open to building
+      const note = proceed(event === "PostToolUseFailure" ? "skip" : (commit ?? "skip"));
+      save();
+      return post(note);
+    }
     // a one-question card (Copilot) has no level answer: leave it unset rather than guess
     if (asked.level && event === "PostToolUse" && answers.length > 1)
       setLevel(answers.slice(1).map(levelAnswer).find(Boolean) ?? "intermediate");
@@ -567,23 +692,32 @@ export function handle(input: HookInput, home: string): object | undefined {
     if (s.mode === "brainstorm" && s.bs) {
       const note = brainstormTurn(s, s.bs, s.answer ?? "your ideas first", home, log);
       save();
-      return {
-        additionalContext: note,
-        hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: note },
-      };
+      return post(note);
     }
+    const understand = startUnderstand();
     save();
-    return undefined;
+    return understand ? post(understand) : undefined;
   }
 
   const files = event === "PreToolUse" ? writtenFiles(input) : [];
+  const gated = s.understand === "stand" || s.understand === "quiz" || s.understand === "ready";
+  if (files.length && s.mode === "task" && gated)
+    return deny(
+      `skarp understand first: no file changes until the user says to build.\n${
+        s.understand === "stand"
+          ? understandRules(s.answer, levelNow(), Boolean(s.light))
+          : s.understand === "quiz"
+            ? "Wait for the user's answer to your quiz."
+            : proceedRule()
+      }`,
+    );
   if (files.length && ((s.reportDue && s.mode === "explain") || s.mode === "brainstorm"))
     return deny(
       `skarp: ${s.mode} mode changes no files. Finish the ${s.mode === "explain" ? "explanation" : "brainstorm"}; if the user wants a change, they say 'build it' and it becomes a task.`,
     );
   if (files.length) {
-    // a write the classifier didn't call a task: it still gets the grade and report
-    if (!s.reportDue)
+    // a write the classifier didn't call a task: it is explained first, then graded and reported
+    if (!s.reportDue) {
       Object.assign(s, {
         mode: "task",
         task: undefined,
@@ -592,7 +726,15 @@ export function handle(input: HookInput, home: string): object | undefined {
         touched: [],
         reportDue: true,
         sentBack: false,
+        understand: "stand",
+        rounds: 0,
       });
+      log("understand_start", { light: false, reason: "unannounced write" });
+      save();
+      return deny(
+        `skarp understand first: explain this change to the user before making it.\n${understandRules(undefined, levelNow(), false)}`,
+      );
+    }
     for (const f of files) {
       const known = s.touched.find((t) => t.path === f.path);
       if (known) known.content += `\n${f.content}`;
@@ -653,6 +795,28 @@ export function handle(input: HookInput, home: string): object | undefined {
       if (e.type === "idea" && e.by === "ai") bs.ideas++;
       if (!(e.type === "idea" && e.by === "you")) bsLog(home, bs, { kind: "map", ...e });
     }
+    save();
+    return undefined;
+  }
+
+  // the AI's where-you-stand: required before the quiz; one send-back, then fail open
+  if (event === "Stop" && s.mode === "task" && s.understand === "stand" && !s.asking) {
+    const reply = input.last_assistant_message ?? lastAssistantText(input.transcript_path);
+    const fixes =
+      reply === undefined ? [] : [...reportFixes(reply, STAND_REPORT), ...explainsCode(reply)];
+    log("stand", reply === undefined ? { not_run: "no reply text on this surface" } : { fixes });
+    if (reply !== undefined && !fixes.length) {
+      Object.assign(s, { understand: "quiz", standText: reply, sentBack: false });
+      save();
+      return undefined;
+    }
+    if (reply !== undefined && !s.sentBack && !input.stop_hook_active)
+      return sendBack(
+        `skarp understand first:\n- ${fixes.join("\n- ")}\n${understandRules(s.answer, levelNow(), Boolean(s.light))}`,
+      );
+    // skarp can't read the reply here: it can't check the explanation, so it doesn't hold the
+    // work on its own failure (rule 24: logged as not run). Otherwise the gate stays.
+    if (reply === undefined) Object.assign(s, { understand: "quiz", standText: "" });
     save();
     return undefined;
   }
@@ -943,6 +1107,10 @@ function fresh(task: string, mode: Mode): Partial<Session> {
     explainBack: false,
     check: undefined,
     closing: false,
+    understand: undefined,
+    light: false,
+    rounds: 0,
+    standText: undefined,
   };
 }
 
@@ -998,6 +1166,27 @@ function related(s: Session, prompt: string): boolean {
     .filter((w) => w.length > 3 && !PLAIN.test(w) && !/[./]/.test(w))
     .some((w) => known.has(w));
 }
+
+// The explanation must point at the code before the quiz counts: a file or file:line in
+// "What the code does now" and "What will change".
+function explainsCode(reply: string): string[] {
+  const at = reply.indexOf(STAND_REPORT.head);
+  if (at < 0) return [];
+  const body = (name: string) =>
+    reply
+      .slice(at)
+      .split(`### ${name}`)[1]
+      ?.split(/\n#{2,3} /)[0] ?? "";
+  return ["What the code does now", "What will change"]
+    .filter((n) => body(n) && !/[\w-]+\.[a-z]{1,4}\b/i.test(body(n)))
+    .map(
+      (n) => `Under \`### ${n}\`, explain it with the files involved (file:line), before the quiz.`,
+    );
+}
+
+// skarp's "go ahead?" question, after the quiz
+const proceedRule = () =>
+  `Then ask skarp's question with your question tool (${ASK_NAMES}): "${PROCEED_QUESTION}" with exactly these options: ${[...PROCEED_HINTS, "Skip"].map((h) => `"${h}"`).join(", ")}; the user can also type what confuses them. If no question tool is available, write it as a numbered list and stop. Do not change files.`;
 
 const hintRule = (hints: string[]) =>
   `Use exactly these options: ${hints.map((h) => `"${h}"`).join(", ")}; the user can also type their own answer.`;
@@ -1197,6 +1386,7 @@ export function standingRules(level: Level): string {
   return [
     "skarp is on in this session. It checks your work with hooks; follow its rules when they appear.",
     `When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (${ASK_NAMES}), or write it as a numbered list and stop.`,
+    "Before you change any file for a task, skarp has you show the user where they stand (`## skarp: where you stand`, with a quiz) and asks whether they are ready; it refuses writes until then.",
     reportRules(level),
     `When the user asks you to explain code (no change), use the explain report instead:\n${explainRules()}`,
     `When the user wants to brainstorm, skarp asks for their idea first, then you follow these rules every turn:\n${brainstormRules("you-first", false)}`,

@@ -28,11 +28,35 @@ function session() {
   return { on };
 }
 
-const answer = (on: ReturnType<typeof session>["on"], ...answers: string[]) =>
-  on("PostToolUse", {
+// the AI's where-you-stand: an explanation that cites the code, then the quiz
+const stand = `Here is where you stand.
+## skarp: where you stand
+### Your view
+"src/a.ts"
+### What the code does now
+\`src/a.ts:3\` adds the items; the discount takes a fraction.
+### What will change
+\`src/a.ts:7\` divides the percent by 100.
+### The gap
+Your view matches the file; it misses the percent.
+### Quiz
+What does applyDiscount(100, 10) return today, and why?`;
+
+// skarp's first question answered on a card; for a task, also the understand-first steps
+// (where you stand, quiz, "ready to build?") so the AI may then change files
+function answer(on: ReturnType<typeof session>["on"], ...answers: string[]) {
+  const out = on("PostToolUse", {
     tool_name: "AskUserQuestion",
     tool_response: { answers: Object.fromEntries(answers.map((x, i) => [`q${i}`, x])) },
   });
+  if (/where you stand/.test(out?.additionalContext ?? "")) understood(on);
+  return out;
+}
+function understood(on: ReturnType<typeof session>["on"]) {
+  on("Stop", { last_assistant_message: stand });
+  on("UserPromptSubmit", { prompt: "it subtracts amount times percent, so 10 means ten times" });
+  on("UserPromptSubmit", { prompt: "Yes, build it" });
+}
 
 test("a task gets skarp's question as a question card; other tools wait for the answer", () => {
   const { on } = session();
@@ -72,8 +96,11 @@ test("Stop sends the AI back once when it never asked; a typed answer then relea
     undefined,
   );
   const out = on("UserPromptSubmit", { prompt: "src/a.ts, intermediate" });
-  assert.match(out.hookSpecificOutput.additionalContext, /Now do the user's task: add a logger/);
+  assert.match(out.hookSpecificOutput.additionalContext, /## skarp: where you stand/);
   assert.equal(on("PreToolUse", { tool_name: "Read", tool_input: {} }), undefined);
+  understood(on);
+  const write = { tool_name: "Write", tool_input: { file_path: "/p/src/a.ts", content: "x" } };
+  assert.equal(on("PreToolUse", write), undefined);
 });
 
 test("chat is not held", () => {
@@ -227,6 +254,7 @@ test("VS Code: askQuestions is the question card, and its reply text is the answ
   on("UserPromptSubmit", { prompt: "add a logger to src/log.ts" });
   assert.equal(on("PreToolUse", { tool_name: "vscode_askQuestions", tool_input: {} }), undefined);
   on("PostToolUse", { tool_name: "vscode_askQuestions", tool_response: "src/log.ts logger" });
+  understood(on);
   on("PreToolUse", {
     tool_name: "create_file",
     tool_input: { filePath: "/p/src/log.ts", content: "logger" },
@@ -279,6 +307,7 @@ test("a numbered pick is read as that option", () => {
   );
   const out = on("UserPromptSubmit", { prompt: "1" });
   assert.match(out.hookSpecificOutput.additionalContext, /src\/log\.ts logger/);
+  understood(on);
   on("PreToolUse", {
     tool_name: "Write",
     tool_input: { file_path: "/p/src/log.ts", content: "logger" },
@@ -399,6 +428,7 @@ test("Copilot CLI harness: tool_result answers, exit code in Bash text, events.j
       },
     }),
   );
+  understood(on);
   on("PreToolUse", {
     tool_name: "Edit",
     tool_input: { input: "*** Update File: /p/src/cart.js\n+tax" },
@@ -569,10 +599,10 @@ test("brainstorm: your idea first, quiet while listing, stress, then a decision 
   const md = readFileSync(bs.payload.path, "utf8");
   assert.match(md, /because every server needs the same data/);
   assert.match(md, /verdict: unknown/);
-  // "build it" starts the decision as a task without asking again
+  // "build it" starts the decision as a task without asking again, explained first
   const build = on("UserPromptSubmit", { prompt: "build it" });
   assert.doesNotMatch(ctx(build), /AskUserQuestion/);
-  assert.match(ctx(build), /## skarp: what changed/);
+  assert.match(ctx(build), /## skarp: where you stand/);
   // a later "continue the brainstorm" brings the saved record back
   const resumed = on("UserPromptSubmit", { prompt: "continue the brainstorm on caching" });
   assert.match(ctx(resumed), /continues an earlier brainstorm/);
@@ -608,6 +638,7 @@ test("a bug fix over three turns: one question, status while unfinished, one rep
     tool_name: "AskUserQuestion",
     tool_response: { answers: { q1: "src/auth.ts validate", q2: "A test passes", q3: "beginner" } },
   });
+  understood(on);
   const write = (f: string) =>
     on("PreToolUse", {
       tool_name: "Edit",
@@ -863,6 +894,7 @@ test("ledger: a new task's user_message carries the new task's id; the grade has
     tool_name: "AskUserQuestion",
     tool_response: { answers: { q: "src/a.ts", l: "beginner" } },
   });
+  understood(on);
   on("PreToolUse", {
     tool_name: "Write",
     tool_input: { file_path: "/p/src/a.ts", content: "log" },
@@ -878,4 +910,62 @@ test("ledger: a new task's user_message carries the new task's id; the grade has
   assert.equal(msgs.at(-1).payload.task_id, asks.at(-1).payload.task_id);
   assert.notEqual(msgs.at(-1).payload.task_id, asks[0].payload.task_id);
   assert.match(lines.find((l) => l.type === "outcome").payload.text, /your plan matched/);
+});
+
+test("understand first: the explanation always comes before a change; only answering is skipped", () => {
+  const { on } = session();
+  const write = { tool_name: "Write", tool_input: { file_path: "/p/src/a.ts", content: "x" } };
+  on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
+  // skipping skarp's question still leads to the explanation, with no view
+  const skip = on("PostToolUse", {
+    tool_name: "AskUserQuestion",
+    tool_response: { answers: { q: "Skip" } },
+  });
+  assert.match(skip.hookSpecificOutput.additionalContext, /## skarp: where you stand/);
+  assert.equal(on("PreToolUse", write).hookSpecificOutput.permissionDecision, "deny");
+  // no explanation: sent back, and writes stay refused after the send-back
+  assert.match(on("Stop", { last_assistant_message: "Plan: add it." }).reason, /where you stand/);
+  on("Stop", { last_assistant_message: "Still no explanation.", stop_hook_active: true });
+  assert.equal(on("PreToolUse", write).hookSpecificOutput.permissionDecision, "deny");
+  // a message while it waits asks for the explanation again
+  const wait = on("UserPromptSubmit", { prompt: "ok go on" });
+  assert.match(wait.hookSpecificOutput.additionalContext, /still needs the explanation/);
+  // the explanation, then a copied answer gets a re-explain
+  assert.equal(on("Stop", { last_assistant_message: stand }), undefined);
+  const copied = on("UserPromptSubmit", {
+    prompt: "src/a.ts:3 adds the items; the discount takes a fraction.",
+  });
+  assert.match(copied.hookSpecificOutput.additionalContext, /repeats your own words/);
+  // an own-words answer: feedback, then "ready to build?"; writes still refused
+  const ready = on("UserPromptSubmit", {
+    prompt: "it subtracts amount times percent, so 10 means ten times",
+  });
+  assert.match(ready.hookSpecificOutput.additionalContext, /Ready for the AI to build it\?/);
+  assert.equal(on("PreToolUse", write).hookSpecificOutput.permissionDecision, "deny");
+  // didn't understand twice, then the plain answer on round three
+  assert.match(
+    on("UserPromptSubmit", { prompt: "I didn't understand" }).hookSpecificOutput.additionalContext,
+    /different way/,
+  );
+  on("UserPromptSubmit", { prompt: "the total is what you pay after the discount" });
+  on("UserPromptSubmit", { prompt: "Still confused about a part" });
+  on("UserPromptSubmit", { prompt: "the percent is divided by 100 before it multiplies" });
+  assert.match(
+    on("UserPromptSubmit", { prompt: "I didn't understand" }).hookSpecificOutput.additionalContext,
+    /plain answer/,
+  );
+  // skip at "ready to build?" is allowed and logged: the explanation was given
+  const go = on("UserPromptSubmit", { prompt: "Skip" });
+  assert.match(go.hookSpecificOutput.additionalContext, /Now do the user's task/);
+  assert.equal(on("PreToolUse", write), undefined);
+});
+
+test("understand first: a write skarp didn't see coming as a task is explained first", () => {
+  const { on } = session();
+  on("UserPromptSubmit", { prompt: "thanks" });
+  const write = { tool_name: "Write", tool_input: { file_path: "/p/f.ts", content: "x" } };
+  assert.match(
+    on("PreToolUse", write).hookSpecificOutput.permissionDecisionReason,
+    /explain this change/,
+  );
 });

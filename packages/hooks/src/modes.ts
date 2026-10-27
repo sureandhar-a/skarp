@@ -54,6 +54,47 @@ export function explainRules(guess?: string): string {
   ].join("\n");
 }
 
+// --- understand first: before the AI builds, you understand what exists and what will change ---
+
+export const STAND_REPORT: ReportShape = {
+  head: "## skarp: where you stand",
+  sections: ["Your view", "What the code does now", "What will change", "The gap", "Quiz"],
+};
+export const PROCEED_QUESTION = "Ready for the AI to build it?";
+export const PROCEED_HINTS = [
+  "Yes, build it",
+  "I didn't understand",
+  "Still confused about a part",
+];
+
+// How long the explanation is: the user's level, and whether this area has faded. Every level
+// gets the explanation before the quiz; a quiz alone doesn't build understanding.
+const DEPTH_FOR: Record<string, string> = {
+  beginner:
+    "The user is a beginner: walk through the current code step by step and explain every term, then ask 2 quiz questions.",
+  intermediate:
+    "The user is intermediate: explain the key code and the parts their view missed in full, the rest briefly, then ask 1 quiz question.",
+  advanced:
+    "The user is advanced: explain the current code and the change concisely, focusing on design choices and risks, then ask 1 quiz question.",
+};
+
+export function understandRules(view: string | undefined, level: string, light: boolean): string {
+  return [
+    "skarp understand-first: do not change any files yet; skarp refuses writes until the user says to build. Read the code you need first.",
+    "Explain first, then quiz: the user has to understand what exists now and what will change before you ask them anything. The explanation sections come before the quiz and are never skipped.",
+    `Then end your reply with a section headed exactly \`${STAND_REPORT.head}\`, with these sub-headings in this order: ${STAND_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    view
+      ? `Your view: quote the user's answer to skarp's question exactly: "${view}".`
+      : 'Your view: write "No view given."',
+    "What the code does now: explain how the relevant code works today, step by step, citing file:line. What will change: explain the change you would make, which files, why, and what behaves differently afterwards.",
+    "The gap: compare the user's view with the code: what matches, what's missing, what's off. Never say 'correct'; no praise. If their view already matches, say so in one line.",
+    "Quiz: only after the explanation. Questions the user answers in their own words, about what you just explained: what the code does now and what will change. Not yes/no, and not answerable by copying your text. Then stop and wait for their answer.",
+    light
+      ? "The user has shown they know this area: keep the explanation short but complete (what exists, what changes), then 1 quiz question."
+      : (DEPTH_FOR[level] ?? DEPTH_FOR.intermediate),
+  ].join("\n");
+}
+
 // "build it" ends a no-change mode and starts the task it led to
 export const BUILD_IT = /^(build it|let'?s build( it)?|go build|implement it|do it now)\b/i;
 
@@ -282,6 +323,7 @@ const HINTS: Record<string, string[]> = {
   "read-back": ["I'll type it", "Not sure yet"], // what does this destroy
   EX1: EXPLAIN_HINTS,
   BS1: BS_HINTS,
+  GO: PROCEED_HINTS,
 };
 export const hintsFor = (block: string) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];
 
