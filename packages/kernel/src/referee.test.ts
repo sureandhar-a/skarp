@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkAnswer, checkReply, placeClaims, saysNotYet } from "./referee.ts";
+import { checkAnswer, checkReply, placeClaims, saysNotYet, untestedClaim } from "./referee.ts";
 
 const report = {
   least_sure: "whether retries should back off",
@@ -122,4 +122,9 @@ test("a test result needs a run; honest negatives aren't claims", () => {
     checkReply("The test should pass after this fix.", report, ["src/retry.ts"], none),
     [],
   );
+});
+
+test("a count claim with '0 failures' and no run is still a pass claim", () => {
+  assert.equal(untestedClaim("Ran it: 2/2 passing, 0 failures.", undefined), true);
+  assert.equal(untestedClaim("2 passed, 1 failed.", false), false);
 });

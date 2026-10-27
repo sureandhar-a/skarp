@@ -37,13 +37,16 @@ const TESTS_COUNT =
   /\b\d+\s*\/\s*\d+\s+(?:tests?\s+)?(?:pass|passing|passed)\b|\ball\s+(?:\d+\s+)?tests?\s+(?:are\s+)?(?:pass|passing|green)\b/i;
 // "2 passed, 1 failed": a sentence that reports a failure is an honest result, not a pass claim
 const FAILED = /\bfail(s|ed|ing|ures?)?\b/i;
+// "0 failures" or "no failures" reports none: it is part of the pass claim, not an honest failure
+const failsIn = (text: string) =>
+  FAILED.test(text.replace(/\b(0|no|zero|without)\s+fail\w*/gi, ""));
 // "tests pass" with no passing run behind it. A reply that reports the failing run it saw
 // ("1 failed … the new test passed") is honest about it.
 export function untestedClaim(text: string, testsPassed?: boolean): boolean {
   if (testsPassed) return false;
-  if (testsPassed === false && FAILED.test(text)) return false;
+  if (testsPassed === false && failsIn(text)) return false;
   return sentences(text).some(
-    (x) => (TESTS_PASS.test(x) || TESTS_COUNT.test(x)) && !HEDGED.test(x) && !FAILED.test(x),
+    (x) => (TESTS_PASS.test(x) || TESTS_COUNT.test(x)) && !HEDGED.test(x) && !failsIn(x),
   );
 }
 const sentences = (text: string) => text.split(/(?<=[.!?\n])/);
