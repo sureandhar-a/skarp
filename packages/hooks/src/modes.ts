@@ -17,6 +17,8 @@ export const TASK_REPORT: ReportShape = {
     "Diagram",
     "Tests and checks",
     "Check by hand",
+    "Kept",
+    "Not yet",
   ],
 };
 
@@ -54,45 +56,51 @@ export function explainRules(guess?: string): string {
   ].join("\n");
 }
 
-// --- understand first: before the AI builds, you understand what exists and what will change ---
+// --- Hear before building (framework §4 K2: hear → reflect → apply; §7 Gap; §18 flows) ---
+// On ground the user hasn't proven, the AI walks them through what the code does now and what
+// will change, then leaves one K8 blank whose fill is checked against the line it cites.
 
-export const STAND_REPORT: ReportShape = {
+export const HEAR_REPORT: ReportShape = {
   head: "## skarp: where you stand",
-  sections: ["Your view", "What the code does now", "What will change", "The gap", "Quiz"],
+  sections: ["Your view", "What the code does now", "What will change", "The gap", "Fill the gap"],
 };
-export const PROCEED_QUESTION = "Ready for the AI to build it?";
-export const PROCEED_HINTS = [
-  "Yes, build it",
-  "I didn't understand",
-  "Still confused about a part",
-];
 
-// How long the explanation is: the user's level, and whether this area has faded. Every level
-// gets the explanation before the quiz; a quiz alone doesn't build understanding.
+// how deep the walkthrough goes: the level is the cold-start default until the area has history
 const DEPTH_FOR: Record<string, string> = {
   beginner:
-    "The user is a beginner: walk through the current code step by step and explain every term, then ask 2 quiz questions.",
+    "The user is a beginner: walk through the current code step by step and explain every term.",
   intermediate:
-    "The user is intermediate: explain the key code and the parts their view missed in full, the rest briefly, then ask 1 quiz question.",
+    "The user is intermediate: explain the key code and the parts their view missed in full, the rest briefly.",
   advanced:
-    "The user is advanced: explain the current code and the change concisely, focusing on design choices and risks, then ask 1 quiz question.",
+    "The user is advanced: explain the current code and the change concisely, focusing on design choices and risks.",
 };
 
-export function understandRules(view: string | undefined, level: string, light: boolean): string {
+// K8's blank: a statement with its conclusion blanked, then the line that shows the answer
+const K8_RULE =
+  'Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user\'s fill.';
+
+export function hearRules(view: string | undefined, level: string, light: boolean): string {
   return [
-    "skarp understand-first: do not change any files yet; skarp refuses writes until the user says to build. Read the code you need first.",
-    "Explain first, then quiz: the user has to understand what exists now and what will change before you ask them anything. The explanation sections come before the quiz and are never skipped.",
-    `Then end your reply with a section headed exactly \`${STAND_REPORT.head}\`, with these sub-headings in this order: ${STAND_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    "skarp Hear: do not change any files yet; skarp refuses writes until the user has filled the gap. Read the code you need first.",
+    `End your reply with a section headed exactly \`${HEAR_REPORT.head}\`, with these sub-headings in this order: ${HEAR_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
     view
       ? `Your view: quote the user's answer to skarp's question exactly: "${view}".`
       : 'Your view: write "No view given."',
-    "What the code does now: explain how the relevant code works today, step by step, citing file:line. What will change: explain the change you would make, which files, why, and what behaves differently afterwards.",
-    "The gap: compare the user's view with the code: what matches, what's missing, what's off. Never say 'correct'; no praise. If their view already matches, say so in one line.",
-    "Quiz: only after the explanation. Questions the user answers in their own words, about what you just explained: what the code does now and what will change. Not yes/no, and not answerable by copying your text. Then stop and wait for their answer.",
+    "What the code does now: how the relevant code works today, step by step, citing file:line. What will change: the change you would make, which files, why, and what behaves differently afterwards.",
+    "The gap: the user's view against the code: what matches, what's missing, what's off. Never say 'correct'; no praise.",
+    K8_RULE,
     light
-      ? "The user has shown they know this area: keep the explanation short but complete (what exists, what changes), then 1 quiz question."
+      ? "The user has shown this area before: keep the walkthrough short but complete."
       : (DEPTH_FOR[level] ?? DEPTH_FOR.intermediate),
   ].join("\n");
+}
+
+// a missed fill: explained another way and asked once more from a new angle; a second miss
+// gets the plain answer (framework §18, understanding a target)
+export function hearRetry(round: number, task: string): string {
+  return round >= 2
+    ? `The user missed the gap again. Give the plain answer now: what the code does and what will change, in simple words with one example from this code, citing file:line. Never say they were wrong. Then do the user's task: ${task}`
+    : `Without judging the answer, explain that point another way: simpler words and a concrete example from this code. Then end with a new \`### Fill the gap\` from a new angle (${K8_RULE.replace(/^Fill the gap \(K8\): /, "")}) Do not change files.`;
 }
 
 // "build it" ends a no-change mode and starts the task it led to
@@ -323,7 +331,6 @@ const HINTS: Record<string, string[]> = {
   "read-back": ["I'll type it", "Not sure yet"], // what does this destroy
   EX1: EXPLAIN_HINTS,
   BS1: BS_HINTS,
-  GO: PROCEED_HINTS,
 };
 export const hintsFor = (block: string) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];
 
