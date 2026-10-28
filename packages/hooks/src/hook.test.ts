@@ -649,9 +649,61 @@ test("understand: the feature is the target; three Not understood at most, then 
   on("UserPromptSubmit", { prompt: "Picker" });
   on("Stop", { last_assistant_message: onePart });
   assert.match(
-    ctx(on("UserPromptSubmit", { prompt: "the ones that are up" })),
+    ctx(on("UserPromptSubmit", { prompt: "the ones it filters" })),
     /In one line: how does the cart work\?/,
   );
+});
+
+test("understand: the fill is checked against the cited line; a miss is retold, the second gets the plain answer", () => {
+  const home = mkdtempSync(join(tmpdir(), "skarp-"));
+  const dir = mkdtempSync(join(tmpdir(), "repo-"));
+  mkdirSync(join(dir, "src"));
+  writeFileSync(
+    join(dir, "src", "pick.ts"),
+    "// pick\n\nexport const pick = (all) => all.filter((i) => i.up);\n",
+  );
+  let sid = "u1";
+  // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
+  const on = (event: string, extra: object = {}): any =>
+    handle({ session_id: sid, cwd: dir, hook_event_name: event, ...extra }, home);
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  const blank = card(
+    "pick() keeps only the interfaces that are ___ (src/pick.ts:3).",
+    "Not understood",
+  );
+  const toPart = () => {
+    on("UserPromptSubmit", { prompt: "explain interface selection" });
+    on("Stop", { last_assistant_message: bigPicture });
+    on("UserPromptSubmit", { prompt: "proceed next" });
+    on("UserPromptSubmit", { prompt: "Picker" });
+    on("PreToolUse", blank);
+  };
+  toPart();
+  // names something on the line: matched
+  const pass = ctx(on("PostToolUse", picked("the ones whose up flag is set")));
+  assert.match(pass, /matches the code at src\/pick.ts:3/);
+  assert.match(pass, /Next piece\?/);
+
+  sid = "u2";
+  toPart();
+  const miss = ctx(on("PostToolUse", picked("the fast ones")));
+  assert.match(miss, /explain that point another way/);
+  assert.doesNotMatch(miss, /Next piece/);
+  // the retry brings only a new blank: no part shape is asked for
+  assert.match(
+    on("Stop", {
+      last_assistant_message:
+        "Put another way.\n### Fill the gap\npick() drops each interface that is not ___ (src/pick.ts:3).",
+    }).reason,
+    /now ask the card/,
+  );
+  const plain = ctx(on("UserPromptSubmit", { prompt: "the cheap ones" }));
+  assert.match(plain, /Give the plain answer now/);
+  assert.match(plain, /Next piece\?/);
+  const ledger = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8");
+  assert.match(ledger, /"result":"pass"/);
+  assert.match(ledger, /"reason":"missed twice"/);
 });
 
 test("brainstorm: your idea first, quiet while listing, stress, then a decision with your why, all recorded", () => {

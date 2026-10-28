@@ -123,6 +123,7 @@ interface Understand {
   parts: string[]; // the parts the big picture named
   part?: string; // the part now explained
   retells: number; // "Not understood" so far on this step (D180)
+  misses?: number; // missed fills on this part: the second gets the plain answer
   results: { part: string; result: string }[];
   fixed?: number; // cards refused on this step
 }
@@ -396,7 +397,8 @@ export function handle(input: HookInput, home: string): object | undefined {
 
   // understand: a card's answer moves the walk-through on, and says what the AI does next
   const undGo = (u: Understand, step: Understand["step"], part?: string): string => {
-    Object.assign(u, { step, retells: 0, fixed: 0 }, part ? { part } : {});
+    Object.assign(u, { step, retells: 0, fixed: 0 }, part ? { part, misses: 0 } : {});
+    if (part) s.standText = undefined;
     const due: Record<string, [string, string]> = {
       orient: ["O1", BLOCKS.O1.question_text],
       next: ["O2", BLOCKS.O2.question_text],
@@ -438,11 +440,79 @@ export function handle(input: HookInput, home: string): object | undefined {
     }
     if (block === "K8") {
       if (lost && u.retells < MAX_RETELLS) return retell(u);
-      const result = skipped ? "put off" : lost ? "still unclear" : "answered";
-      if (skipped) log("owed", { block: "K8", question: s.blank ?? "" });
-      u.results.push({ part: u.part ?? u.target, result });
-      log("understand_check", { block: "K8", part: u.part, fact: s.fact, result });
-      return openParts(u).length ? undGo(u, "next") : undGo(u, "end");
+      const part = u.part ?? u.target;
+      // the part is settled: what it came to goes on the record, then the next card
+      const settle = (result: string, note = "") => {
+        u.results.push({ part, result });
+        return `${note}${openParts(u).length ? undGo(u, "next") : undGo(u, "end")}`;
+      };
+      const owe = (reason: string) => log("owed", { block: "K8", question: s.blank ?? "", reason });
+      if (skipped || lost) {
+        log("understand_check", {
+          block: "K8",
+          part,
+          fact: s.fact,
+          result: skipped ? "not_yet" : "unclear",
+        });
+        owe(skipped ? "skipped" : "still unclear");
+        return settle(skipped ? "put off" : "still unclear");
+      }
+      // "I don't know" is a "not yet" debt (D54): owed, and the plain answer
+      if (saysNotYet(text)) {
+        log("understand_check", { block: "K8", part, fact: s.fact, result: "not_yet" });
+        owe("not sure");
+        return settle(
+          "not sure yet",
+          `The user isn't sure yet (skarp keeps it as owed). Give the plain answer in two or three lines, citing ${s.fact ?? "the line"}, without judging them.\n`,
+        );
+      }
+      // the cited line as the code says it now; if it can't be read, the part's text stands in
+      const lines = factLines(input.cwd, s.fact);
+      if (lines === undefined && !s.standText) {
+        log("understand_check", {
+          block: "K8",
+          part,
+          fact: s.fact,
+          not_run: "the cited line can't be read",
+        });
+        return settle("answered, not checked");
+      }
+      const fails = checkAnswer(
+        text,
+        factEvidence(input.cwd, s.fact, s.standText ?? ""),
+        s.standText ?? "",
+      );
+      if (fails.includes("empty") || fails.includes("injection")) {
+        s.asking = { block: "K8", question: s.blank ?? "", level: false };
+        return `The user's answer doesn't fill the gap. Ask them again, with the card, to fill in: "${s.blank ?? "the blank"}". Change no files.`;
+      }
+      const round = u.misses ?? 0;
+      log("understand_check", {
+        block: "K8",
+        part,
+        fact: s.fact,
+        result: fails.length ? "miss" : "pass",
+        fails,
+        round,
+        text,
+        fact_read: lines !== undefined,
+      });
+      if (!fails.length)
+        return settle(
+          `matched at ${s.fact}`,
+          `The user's fill: "${text}". In one line, say what in it matches the code at ${s.fact} and what is missing. Never say 'correct'; no praise.\n`,
+        );
+      u.misses = round + 1;
+      // a miss is never shown as wrong; the second gets the plain answer and the walk goes on
+      if (u.misses >= 2) {
+        owe("missed twice");
+        return settle(
+          "plain answer given",
+          `The user missed the gap again. Give the plain answer now, in simple words with one example from this code, citing ${s.fact ?? "the line"}. Never say they were wrong.\n`,
+        );
+      }
+      s.sentBack = false;
+      return `Without judging the answer, explain that point another way: simpler words and a concrete example from this code. Then end with a new \`### Fill the gap\` from a new angle: one statement ending in ___, followed by the file:line that shows the answer. ${cardRule("that new statement, word for word, with its file:line", PART_HINTS, true)}`;
     }
     // A10, the closing recall: the walk-through is done (D185)
     if (skipped) log("owed", { block: "A10", question: understoodQuestion(u.target) });
@@ -826,6 +896,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     } else if (u.step === "part") {
       // the card asks the part's blank itself, so the fill can be checked against its line
       const k8 = blankIn(`### Fill the gap\n${cardQuestion(input.tool_input)}`);
+      s.standText = lastAssistantText(input.transcript_path) ?? s.standText;
       card = { block: "K8", question: k8?.blank ?? "" };
       fixes = [
         ...(k8
@@ -1021,7 +1092,10 @@ export function handle(input: HookInput, home: string): object | undefined {
     if (reply === undefined)
       log("referee", { check: u.step, not_run: "no reply text on this surface" });
     else {
-      fixes.push(...reportFixes(reply, over ? OVERVIEW_REPORT : PART_REPORT));
+      // a retry after a missed fill brings only a new blank
+      const retry = !over && (u.misses ?? 0) > 0;
+      if (!retry) fixes.push(...reportFixes(reply, over ? OVERVIEW_REPORT : PART_REPORT));
+      if (!over) s.standText = reply;
       const named = over ? partsIn(reply) : [];
       const k8 = over ? undefined : blankIn(reply);
       if (over && named.length) u.parts = named;
@@ -1044,7 +1118,9 @@ export function handle(input: HookInput, home: string): object | undefined {
     const question = over ? BLOCKS.O0.question_text : (s.blank ?? "");
     s.asking = { block: over ? "O0" : "K8", question, level: false };
     save();
-    if (may && !asText(question))
+    // a part's blank is in its own text, so only its options show it was asked as text
+    const asked = over ? asText(question) : asText(question) && asText(PART_HINTS[0] ?? "");
+    if (may && !asked)
       return sendBack(`skarp: now ask the card. ${understandRules(u, levelNow())}`);
     return undefined;
   }
