@@ -408,6 +408,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     };
     const card = due[step];
     s.asking = card ? { block: card[0], question: card[1], level: false } : undefined;
+    if (card) log("ask", { block: card[0], reason: "understand" });
     s.sentBack = false;
     log("understand_step", { step, part: u.part });
     return understandRules(u, levelNow());
@@ -1132,6 +1133,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     // the step is written but its card wasn't asked: it's due now, and a typed answer counts too
     const question = over ? BLOCKS.O0.question_text : (s.blank ?? "");
     s.asking = { block: over ? "O0" : "K8", question, level: false };
+    log("ask", { block: s.asking.block, reason: "understand" });
     save();
     // a part's blank is in its own text, so only its options show it was asked as text
     const asked = over ? asText(question) : asText(question) && asText(PART_HINTS[0] ?? "");
