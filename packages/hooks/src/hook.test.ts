@@ -667,6 +667,7 @@ test("understand: the fill is checked against the cited line; a miss is retold, 
   const home = mkdtempSync(join(tmpdir(), "skarp-"));
   const dir = mkdtempSync(join(tmpdir(), "repo-"));
   mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "src", "apply.ts"), "export const apply = () => {};\n");
   writeFileSync(
     join(dir, "src", "pick.ts"),
     "// pick\n\nexport const pick = (all) => all.filter((i) => i.up);\n",
@@ -712,6 +713,17 @@ test("understand: the fill is checked against the cited line; a miss is retold, 
   assert.match(plain, /Next piece\?/);
   const ledger = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8");
   assert.match(ledger, /"result":"pass"/);
+
+  // what a step cites must be a real file here: a made-up path is sent back
+  sid = "u3";
+  on("UserPromptSubmit", { prompt: "explain interface selection" });
+  const madeUp = on("Stop", {
+    last_assistant_message: bigPicture.replace("src/apply.ts", "src/nowhere.ts"),
+  });
+  assert.match(
+    madeUp.reason,
+    /src\/nowhere\.ts isn't in this project: name the real file for Apply/,
+  );
   assert.match(ledger, /"reason":"missed twice"/);
 });
 

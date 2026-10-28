@@ -60,6 +60,7 @@ import {
   PART_REPORT,
   type Phase,
   parseMap,
+  partLines,
   partRules,
   partsIn,
   RESUME,
@@ -899,6 +900,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       const text = lastAssistantText(input.transcript_path);
       const named = partsIn(text ?? "");
       if (named.length) Object.assign(u, { parts: named, overview: text });
+      fixes.push(...citeFixes(input.cwd, partLines(text ?? "")));
     } else if (u.step === "part") {
       // the card asks the part's blank itself, so the fill can be checked against its line
       const k8 = blankIn(`### Fill the gap\n${cardQuestion(input.tool_input)}`);
@@ -910,6 +912,7 @@ export function handle(input: HookInput, home: string): object | undefined {
           : [
               "Ask your Fill the gap statement as the question: one statement ending in ___, then the file:line that shows the answer.",
             ]),
+        ...citeFixes(input.cwd, k8 ? [{ name: "the blank", path: k8.fact }] : []),
         ...cardFixes(input.tool_input, "", PART_HINTS),
       ];
       if (k8) Object.assign(s, k8);
@@ -1106,6 +1109,12 @@ export function handle(input: HookInput, home: string): object | undefined {
       const k8 = over ? undefined : blankIn(reply);
       if (over && named.length) Object.assign(u, { parts: named, overview: reply });
       if (k8) Object.assign(s, k8);
+      fixes.push(
+        ...citeFixes(
+          input.cwd,
+          over ? partLines(reply) : k8 ? [{ name: "the blank", path: k8.fact }] : [],
+        ),
+      );
       if (!fixes.length && over && !named.length)
         fixes.push(
           "Under `### The main parts`, list each part as `- **Part name**: what it does (path)`.",
@@ -1527,6 +1536,31 @@ export function understandRules(u: Understand, level: Level): string {
     case "end":
       return `${understoodRules(u.results, openParts(u))}\n${cardRule(`"${understoodQuestion(u.target)}"`, ["Not yet"], true)}`;
   }
+}
+
+// What a step cites must be a real file in this project, or the user has nothing to read and skarp
+// nothing to check against. No project folder to look in: nothing is checked.
+export function citeFixes(
+  cwd: string | undefined,
+  parts: { name: string; path?: string }[],
+): string[] {
+  if (!cwd || !existsSync(cwd)) return [];
+  const real = (p: string) => {
+    const f = p
+      .replace(/[`'"]/g, "")
+      .replace(/:\d+(-\d+)?$/, "")
+      .trim();
+    return Boolean(f) && existsSync(isAbsolute(f) ? f : join(cwd, f));
+  };
+  return parts.flatMap(({ name, path }) =>
+    !path
+      ? [
+          `Give the file for ${name} in brackets at the end of its line: \`- **${name}**: what it does (path)\`.`,
+        ]
+      : path.split(/,\s*/).some(real)
+        ? []
+        : [`${path} isn't in this project: name the real file for ${name}.`],
+  );
 }
 
 // a card's question and options, Claude's { questions } or Copilot's ask_user { message }

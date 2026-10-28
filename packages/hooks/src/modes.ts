@@ -53,16 +53,20 @@ const ANGLES = [
 ];
 
 // the parts the big picture named: "- **Name**: one line (path)" under The main parts
-export function partsIn(reply: string): string[] {
+export function partLines(reply: string): { name: string; path?: string }[] {
   const at = reply.indexOf(`### ${OVERVIEW_REPORT.sections[2]}`);
   if (at < 0) return [];
   const body = reply.slice(at).split("\n").slice(1);
   const end = body.findIndex((l) => /^#{2,3} /.test(l));
   return (end < 0 ? body : body.slice(0, end))
-    .map((l) => l.match(/^\s*[-*]\s+\*\*(.+?)\*\*/)?.[1]?.trim())
-    .filter((n): n is string => Boolean(n))
+    .flatMap((l) => {
+      const name = l.match(/^\s*[-*]\s+\*\*(.+?)\*\*/)?.[1]?.trim();
+      const path = l.match(/\(([^()]*[./][^()]*)\)\s*$/)?.[1]?.trim();
+      return name ? [{ name, path }] : [];
+    })
     .slice(0, 4);
 }
+export const partsIn = (reply: string) => partLines(reply).map((p) => p.name);
 
 export function overviewRules(target: string, level: string, round = 0): string {
   return [
