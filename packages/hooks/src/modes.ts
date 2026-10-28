@@ -42,7 +42,9 @@ export const BIG_PICTURE_HINTS = ["Proceed next", "Not understood"];
 export const PART_HINTS = ["Not understood"]; // the K8 card: free text is the fill (D184)
 export const DONE_FOR_NOW = "Done for now";
 export const MAX_RETELLS = 3; // "Not understood" gets up to 3 new angles (D180)
-export const understoodQuestion = (target: string) => `In one line: how does ${target} work?`;
+// "how trace search works" is already a how-question; "the cart" needs one around it
+export const understoodQuestion = (target: string) =>
+  /^how\b/i.test(target) ? `In one line: ${target}?` : `In one line: how does ${target} work?`;
 
 // each "Not understood" tells it from a new angle; the third is the plainest form (D180)
 const ANGLES = [
@@ -74,7 +76,7 @@ export function overviewRules(target: string, level: string, round = 0): string 
     ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
     `Write the big picture in a section headed exactly \`${OVERVIEW_REPORT.head}\`, with these sub-headings in this order: ${OVERVIEW_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
     "What it is: one or two plain sentences, as if the user has never seen it. What it solves: the problem it exists for here.",
-    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)`, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
+    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)` with the path from the project root, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
     "Do not go into any one part yet: the user picks where to start next.",
     DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
     "Never praise.",
@@ -129,7 +131,7 @@ const DEPTH_FOR: Record<string, string> = {
 
 // K8's blank: a statement with its conclusion blanked, then the line that shows the answer
 const K8_RULE =
-  'Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user\'s fill.';
+  'Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer, its path from the project root. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user\'s fill.';
 
 export function hearRules(view: string | undefined, level: string, light: boolean): string {
   return [

@@ -684,7 +684,7 @@ var BIG_PICTURE_HINTS = ["Proceed next", "Not understood"];
 var PART_HINTS = ["Not understood"];
 var DONE_FOR_NOW = "Done for now";
 var MAX_RETELLS = 3;
-var understoodQuestion = (target) => `In one line: how does ${target} work?`;
+var understoodQuestion = (target) => /^how\b/i.test(target) ? `In one line: ${target}?` : `In one line: how does ${target} work?`;
 var ANGLES = [
   "",
   "The user didn't follow it. Tell it again in simpler words, with one concrete example from this code.",
@@ -709,7 +709,7 @@ function overviewRules(target, level, round = 0) {
     ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
     `Write the big picture in a section headed exactly \`${OVERVIEW_REPORT.head}\`, with these sub-headings in this order: ${OVERVIEW_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
     "What it is: one or two plain sentences, as if the user has never seen it. What it solves: the problem it exists for here.",
-    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)`, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
+    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)` with the path from the project root, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
     "Do not go into any one part yet: the user picks where to start next.",
     DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
     "Never praise."
@@ -744,7 +744,7 @@ var DEPTH_FOR = {
   intermediate: "The user is intermediate: explain the key code and the parts their view missed in full, the rest briefly.",
   advanced: "The user is advanced: explain the current code and the change concisely, focusing on design choices and risks."
 };
-var K8_RULE = `Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user's fill.`;
+var K8_RULE = `Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer, its path from the project root. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user's fill.`;
 function hearRules(view, level, light) {
   return [
     "skarp Hear: do not change any files yet; skarp refuses writes until the user has filled the gap. Read the code you need first.",
@@ -1166,7 +1166,7 @@ ${rulesFor(s, levelNow())}`}`;
     if (block === "O0") {
       if (lost && u.retells < MAX_RETELLS) return retell(u);
       if (lost) log("still_unclear", { block });
-      return u.parts.length > 1 ? undGo(u, "orient") : undGo(u, "part", u.parts[0] ?? u.target);
+      return u.parts.length === 1 ? undGo(u, "part", u.parts[0]) : undGo(u, "orient");
     }
     if (block === "O1" || block === "O2") {
       if (block === "O2" && (skipped || /^done for now\b/i.test(text))) return undGo(u, "end");
@@ -2101,7 +2101,7 @@ function targetOf(prompt) {
   ).replace(/\s*\bto me\b/i, "").replace(/[?.!\s]+$/, "").trim();
   return rest || t;
 }
-var cardRule = (question, options, free = false) => `Then ask the user with your question tool (${ASK_NAMES}), one question with header "skarp": ${question}, with these options: ${[...options, "Skip"].map((o) => `"${o}"`).join(", ")}${free ? "; the user can also type their own answer" : ""}. If that tool is not loaded, load it with ToolSearch first, without telling the user. If no question tool is available, write the question and its options as a numbered list and stop. Change no files.`;
+var cardRule = (question, options, free = false) => `Then ask the user with your question tool (${ASK_NAMES}), one question with header "skarp": ${question}, with these options: ${[...options, "Skip"].map((o) => `"${o}"`).join(", ")}${free ? "; the user can also type their own answer" : ""}. Give no default or pre-filled answer. If that tool is not loaded, load it with ToolSearch first, without telling the user. If no question tool is available, write the question and its options as a numbered list and stop. Change no files.`;
 var openParts = (u) => u.parts.filter((p) => !u.results.some((r) => r.part === p));
 function understandRules(u, level) {
   switch (u.step) {
@@ -2109,7 +2109,7 @@ function understandRules(u, level) {
       return `${overviewRules(u.target, level, u.retells)}
 ${cardRule(`"${BLOCKS.O0.question_text}"`, BIG_PICTURE_HINTS)}`;
     case "orient":
-      return `skarp understand: the big picture is done; the user picks where to start. ${cardRule(`"${BLOCKS.O1.question_text}"`, u.parts)}`;
+      return `skarp understand: the big picture is done; the user picks where to start. ${cardRule(`"${BLOCKS.O1.question_text}"`, u.parts.length ? u.parts : ["<each part the big picture named>"])}`;
     case "part":
       return `${partRules(u.part ?? u.target, level, u.retells)}
 ${cardRule("your Fill the gap statement, word for word, with its file:line", PART_HINTS, true)}`;
@@ -2364,7 +2364,7 @@ function deny(reason) {
 function askRule(question, reason, options, level, check = false) {
   return `${[
     `skarp rule, before anything else: ask the user with your question tool (${ASK_NAMES}), so they get a question card.`,
-    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
+    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed". Give no default or pre-filled answer: the user picks their own.`,
     check ? `Question 2, header "Check": "What would show it's fixed?" with options "A test passes", "I'll try it by hand", "Not sure"; the user can also type their own.` : "",
     level ? `Question ${check ? 3 : 2}, header "Level": "Your level, so skarp's explanations fit you?" with options "beginner", "intermediate", "advanced".` : "",
     "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.",

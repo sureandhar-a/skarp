@@ -544,6 +544,8 @@ test("understand: big picture, a card, Not understood retold, a part with its bl
     /"Does the big picture make sense\?".*"Proceed next", "Not understood", "Skip"/,
   );
   assert.doesNotMatch(ctx(start), /what do you think it does now/); // no opening guess (D182)
+  // Copilot's ask_user pre-fills a default unless told not to, and skarp refuses that card
+  assert.match(ctx(start), /Give no default or pre-filled answer/);
   const write = on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/a.ts" } });
   assert.equal(write.permissionDecision, "deny");
   assert.equal(
@@ -635,6 +637,18 @@ test("understand: a big picture missing its parts is sent back; asked as text, a
     on("Stop", { last_assistant_message: onePart.replace(/pick\(\).*$/m, "It filters.") }).reason,
     /ending in ___/,
   );
+});
+
+test("understand on Copilot: the big picture's parts unread, Where do we start still comes, from the card", () => {
+  const { on } = session();
+  const ctx = (o: { additionalContext: string }) => o.additionalContext;
+  on("UserPromptSubmit", { prompt: "i want to understand how status reads the ledger" });
+  // the card is asked in the same turn: no transcript, so skarp never read the parts
+  on("PreToolUse", card("Does the big picture make sense?", "Proceed next", "Not understood"));
+  const orient = ctx(on("PostToolUse", picked("Proceed next")));
+  assert.match(orient, /"Where do we start\?".*<each part the big picture named>/);
+  on("PreToolUse", card("Where do we start?", "Reading", "Filtering", "Skip"));
+  assert.match(ctx(on("PostToolUse", picked("Filtering"))), /explain only this part: Filtering/);
 });
 
 test("understand: the feature is the target; three Not understood at most, then on", () => {

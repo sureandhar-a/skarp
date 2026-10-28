@@ -430,8 +430,9 @@ export function handle(input: HookInput, home: string): object | undefined {
     if (block === "O0") {
       if (lost && u.retells < MAX_RETELLS) return retell(u);
       if (lost) log("still_unclear", { block });
-      // one part skips "Where do we start?"
-      return u.parts.length > 1 ? undGo(u, "orient") : undGo(u, "part", u.parts[0] ?? u.target);
+      // one part skips "Where do we start?"; parts skarp couldn't read (Copilot shares no
+      // transcript) come from the O1 card's options instead
+      return u.parts.length === 1 ? undGo(u, "part", u.parts[0]) : undGo(u, "orient");
     }
     if (block === "O1" || block === "O2") {
       if (block === "O2" && (skipped || /^done for now\b/i.test(text))) return undGo(u, "end");
@@ -1521,7 +1522,7 @@ export function targetOf(prompt: string): string {
 }
 
 const cardRule = (question: string, options: string[], free = false) =>
-  `Then ask the user with your question tool (${ASK_NAMES}), one question with header "skarp": ${question}, with these options: ${[...options, "Skip"].map((o) => `"${o}"`).join(", ")}${free ? "; the user can also type their own answer" : ""}. If that tool is not loaded, load it with ToolSearch first, without telling the user. If no question tool is available, write the question and its options as a numbered list and stop. Change no files.`;
+  `Then ask the user with your question tool (${ASK_NAMES}), one question with header "skarp": ${question}, with these options: ${[...options, "Skip"].map((o) => `"${o}"`).join(", ")}${free ? "; the user can also type their own answer" : ""}. Give no default or pre-filled answer. If that tool is not loaded, load it with ToolSearch first, without telling the user. If no question tool is available, write the question and its options as a numbered list and stop. Change no files.`;
 
 const openParts = (u: Understand) => u.parts.filter((p) => !u.results.some((r) => r.part === p));
 
@@ -1530,7 +1531,7 @@ export function understandRules(u: Understand, level: Level): string {
     case "overview":
       return `${overviewRules(u.target, level, u.retells)}\n${cardRule(`"${BLOCKS.O0.question_text}"`, BIG_PICTURE_HINTS)}`;
     case "orient":
-      return `skarp understand: the big picture is done; the user picks where to start. ${cardRule(`"${BLOCKS.O1.question_text}"`, u.parts)}`;
+      return `skarp understand: the big picture is done; the user picks where to start. ${cardRule(`"${BLOCKS.O1.question_text}"`, u.parts.length ? u.parts : ["<each part the big picture named>"])}`;
     case "part":
       return `${partRules(u.part ?? u.target, level, u.retells)}\n${cardRule("your Fill the gap statement, word for word, with its file:line", PART_HINTS, true)}`;
     case "next":
@@ -1913,7 +1914,7 @@ export function askRule(
 ): string {
   return `${[
     `skarp rule, before anything else: ask the user with your question tool (${ASK_NAMES}), so they get a question card.`,
-    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
+    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed". Give no default or pre-filled answer: the user picks their own.`,
     check
       ? 'Question 2, header "Check": "What would show it\'s fixed?" with options "A test passes", "I\'ll try it by hand", "Not sure"; the user can also type their own.'
       : "",

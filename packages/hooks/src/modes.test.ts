@@ -11,6 +11,7 @@ import {
   parseMap,
   partRules,
   partsIn,
+  understoodQuestion,
   understoodRules,
 } from "./modes.ts";
 
@@ -123,6 +124,14 @@ test("understand: each step names its report, and Not understood tells it from a
   assert.match(part, /Fill the gap \(K8\)/);
   assert.doesNotMatch(part, /New ideas/);
   assert.deepEqual(hintsFor("O0"), ["Proceed next", "Not understood"]);
+});
+
+test("understand: the closing question reads well for a thing and for a how-question", () => {
+  assert.equal(understoodQuestion("the cart"), "In one line: how does the cart work?");
+  assert.equal(
+    understoodQuestion("how trace search works in jaeger-ui"),
+    "In one line: how trace search works in jaeger-ui?",
+  );
 });
 
 test("understand: the ending lists what each part came to and what's left", () => {
