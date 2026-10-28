@@ -24,7 +24,7 @@ function session() {
   const on = (event: string, extra: object = {}) =>
     // biome-ignore lint/suspicious/noExplicitAny: hook outputs differ per event
     handle({ session_id: "s1", cwd, hook_event_name: event, ...extra }, home) as any;
-  return { on };
+  return { on, home };
 }
 
 // the AI's walkthrough (Hear): it cites the code, then one K8 blank with the line it points at
@@ -531,7 +531,7 @@ const picked = (a: string) => ({
 });
 
 test("understand: big picture, a card, Not understood retold, a part with its blank, next, then the recall", () => {
-  const { on } = session();
+  const { on, home } = session();
   const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
     o.hookSpecificOutput.additionalContext;
   const start = on("UserPromptSubmit", {
@@ -592,16 +592,25 @@ test("understand: big picture, a card, Not understood retold, a part with its bl
   assert.match(end, /Picker: answered/);
   assert.match(end, /not covered \(Apply\)/);
   assert.match(end, /"In one line: how does interface selection work\?"/);
-  on(
-    "PreToolUse",
-    card("In one line: how does interface selection work?", "Not yet"),
-  );
+  on("PreToolUse", card("In one line: how does interface selection work?", "Not yet"));
   assert.match(ctx(on("PostToolUse", picked("it filters, then applies"))), /what in it matches/);
-  // the walk-through is over: "build it" starts a task from what was explained
-  assert.match(
-    ctx(on("UserPromptSubmit", { prompt: "build it" })),
-    /interface selection/,
+  // the part left goes to the Shelf; the walk-through is kept as one file
+  const ledger = readFileSync(join(home, "ledger", "hooks.jsonl"), "utf8");
+  assert.match(ledger, /"type":"shelf".*"parts":\["Apply"\]/);
+  const saved = JSON.parse(
+    ledger
+      .trim()
+      .split("\n")
+      .findLast((l) => l.includes('"kind":"understand"')) ?? "{}",
   );
+  const md = readFileSync(saved.payload.path, "utf8");
+  assert.match(md, /^# Understood: interface selection$/m);
+  assert.match(md, /## skarp: big picture/);
+  assert.match(md, /## Picker \(answered, not checked\)/);
+  assert.match(md, /## Not yet\n- Apply/);
+  assert.match(md, /## In your own words\nit filters, then applies/);
+  // the walk-through is over: "build it" starts a task from what was explained
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "build it" })), /interface selection/);
 });
 
 test("understand: a big picture missing its parts is sent back; asked as text, a typed answer counts", () => {

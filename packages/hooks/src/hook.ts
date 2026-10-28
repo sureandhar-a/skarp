@@ -124,7 +124,8 @@ interface Understand {
   part?: string; // the part now explained
   retells: number; // "Not understood" so far on this step (D180)
   misses?: number; // missed fills on this part: the second gets the plain answer
-  results: { part: string; result: string }[];
+  results: { part: string; result: string; text?: string }[]; // text: the AI's explanation
+  overview?: string; // the big picture as the AI wrote it
   fixed?: number; // cards refused on this step
 }
 
@@ -443,7 +444,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       const part = u.part ?? u.target;
       // the part is settled: what it came to goes on the record, then the next card
       const settle = (result: string, note = "") => {
-        u.results.push({ part, result });
+        u.results.push({ part, result, text: s.standText });
         return `${note}${openParts(u).length ? undGo(u, "next") : undGo(u, "end")}`;
       };
       const owe = (reason: string) => log("owed", { block: "K8", question: s.blank ?? "", reason });
@@ -514,8 +515,12 @@ export function handle(input: HookInput, home: string): object | undefined {
       s.sentBack = false;
       return `Without judging the answer, explain that point another way: simpler words and a concrete example from this code. Then end with a new \`### Fill the gap\` from a new angle: one statement ending in ___, followed by the file:line that shows the answer. ${cardRule("that new statement, word for word, with its file:line", PART_HINTS, true)}`;
     }
-    // A10, the closing recall: the walk-through is done (D185)
+    // A10, the closing recall: the walk-through is done (D185). Parts not covered go to the
+    // Shelf, and the walk-through is kept as one file, so it outlives the chat
     if (skipped) log("owed", { block: "A10", question: understoodQuestion(u.target) });
+    const shelf = openParts(u);
+    if (shelf.length) log("shelf", { target: u.target, parts: shelf });
+    saveWalkThrough(home, u, skipped ? undefined : said, log);
     Object.assign(s, { und: undefined, mode: undefined, reportDue: false, lastExplain: u.target });
     return skipped
       ? "The user put the closing recall off; skarp keeps it as owed. Say so in one line."
@@ -891,8 +896,9 @@ export function handle(input: HookInput, home: string): object | undefined {
       card = { block: "O0", question: BLOCKS.O0.question_text };
       fixes = cardFixes(input.tool_input, card.question, BIG_PICTURE_HINTS);
       // the parts the big picture named, when this agent's transcript can be read
-      const named = partsIn(lastAssistantText(input.transcript_path) ?? "");
-      if (named.length) u.parts = named;
+      const text = lastAssistantText(input.transcript_path);
+      const named = partsIn(text ?? "");
+      if (named.length) Object.assign(u, { parts: named, overview: text });
     } else if (u.step === "part") {
       // the card asks the part's blank itself, so the fill can be checked against its line
       const k8 = blankIn(`### Fill the gap\n${cardQuestion(input.tool_input)}`);
@@ -1098,7 +1104,7 @@ export function handle(input: HookInput, home: string): object | undefined {
       if (!over) s.standText = reply;
       const named = over ? partsIn(reply) : [];
       const k8 = over ? undefined : blankIn(reply);
-      if (over && named.length) u.parts = named;
+      if (over && named.length) Object.assign(u, { parts: named, overview: reply });
       if (k8) Object.assign(s, k8);
       if (!fixes.length && over && !named.length)
         fixes.push(
@@ -1904,6 +1910,45 @@ function startContext(text: string) {
     additionalContext: text,
     hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
   };
+}
+
+// A finished walk-through as one file: the big picture, each part with what its check came to,
+// what's left on the Shelf, and the user's closing line.
+function saveWalkThrough(
+  home: string,
+  u: Understand,
+  closing: string | undefined,
+  log: (type: string, payload: object) => void,
+) {
+  const section = (text: string | undefined, head: string) =>
+    text?.includes(head) ? text.slice(text.indexOf(head)).trim() : undefined;
+  const shelf = u.parts.filter((p) => !u.results.some((r) => r.part === p));
+  const md = [
+    `# Understood: ${u.target}`,
+    section(u.overview, OVERVIEW_REPORT.head),
+    ...u.results.map((r) =>
+      [
+        `## ${r.part} (${r.result})`,
+        section(r.text, PART_REPORT.head)?.replace(PART_REPORT.head, ""),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    ),
+    `## Not yet\n${shelf.length ? shelf.map((p) => `- ${p}`).join("\n") : "Nothing left."}`,
+    `## In your own words\n${closing ?? "Not yet (owed)."}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  try {
+    const dir = join(home, "reports");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(
+      dir,
+      `${new Date().toISOString().slice(0, 10)}-understand-${randomUUID().slice(0, 8)}.md`,
+    );
+    writeFileSync(path, `${md}\n`, { mode: 0o600 });
+    log("report", { kind: "understand", path });
+  } catch {}
 }
 
 // The report part of a reply, saved as its own file and pointed to from the ledger.
