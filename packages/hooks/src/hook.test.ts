@@ -14,7 +14,6 @@ import {
   SECTIONS,
   writtenFiles,
 } from "./hook.ts";
-import { EXPLAIN_REPORT } from "./modes.ts";
 
 const cwd = "/p";
 const report = (body = "") =>
@@ -502,43 +501,157 @@ test("a checked report is saved as a file; ledger lines carry the project and ta
   assert.ok(!JSON.stringify(seen).includes('"x"'));
 });
 
-const explained = (body = "") =>
-  `Here it is.\n## skarp: explained\n${EXPLAIN_REPORT.sections.map((s) => `### ${s}\nx`).join("\n")}\n${body}`;
-
-test("explain: your guess first with code's options, no writes, a checked explanation, then explain-back", () => {
-  const { on } = session();
-  const start = on("UserPromptSubmit", { prompt: "can you explain the repo to me" });
-  const ctx = start.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /what do you think it does now/);
-  assert.match(ctx, /"I'll type my guess", "No idea yet"/);
-  assert.match(ctx, /## skarp: explained/);
-  answer(on, "a CLI that talks to a server", "beginner");
-  const write = on("PreToolUse", {
-    tool_name: "Write",
-    tool_input: { file_path: "/p/a.ts", content: "x" },
-  });
-  assert.match(write.hookSpecificOutput.permissionDecisionReason, /explain mode changes no files/);
-  assert.equal(write.permissionDecision, "deny"); // top-level shape for the Copilot harness
-  assert.match(
-    on("Stop", { last_assistant_message: "It is a CLI." }).reason,
-    /## skarp: explained/,
-  );
-  assert.match(
-    on("Stop", { last_assistant_message: explained(), stop_hook_active: true }).systemMessage,
-    /explanation checked/,
-  );
-  const back = on("UserPromptSubmit", { prompt: "the hook reads stdin and writes a ledger" });
-  assert.match(back.hookSpecificOutput.additionalContext, /what in their answer matches the code/);
+// understand: the big picture, then one part at a time on cards (framework §18, D179-D185)
+const bigPicture = `Here.
+## skarp: big picture
+### What it is
+A picker for the network interface.
+### What it solves
+Choosing one interface out of many.
+### The main parts
+- **Picker**: lists the interfaces (src/pick.ts)
+- **Apply**: applies the choice (src/apply.ts)
+They run in that order.`;
+const onePart = `## skarp: one part
+### What it is
+The picker.
+### Why it exists
+Many interfaces.
+### How it works
+src/pick.ts:3 filters them.
+### Fill the gap
+pick() keeps only the interfaces that are ___ (src/pick.ts:3).`;
+const card = (question: string, ...options: string[]) => ({
+  tool_name: "AskUserQuestion",
+  tool_input: { questions: [{ question, options: options.map((label) => ({ label })) }] },
+});
+const picked = (a: string) => ({
+  tool_name: "AskUserQuestion",
+  tool_response: { answers: { q: a } },
 });
 
-test("explain: the guess is quoted in the rules; a new task after it starts fresh", () => {
+test("understand: big picture, a card, Not understood retold, a part with its blank, next, then the recall", () => {
   const { on } = session();
-  on("UserPromptSubmit", { prompt: "walk me through how login works" });
-  on("PostToolUse", { tool_name: "vscode_askQuestions", tool_response: "sessions in redis" });
-  on("Stop", { last_assistant_message: explained() });
-  const next = on("UserPromptSubmit", { prompt: "add a logout button to src/header.tsx" });
-  assert.match(next.hookSpecificOutput.additionalContext, /AskUserQuestion/);
-  assert.match(next.hookSpecificOutput.additionalContext, /## skarp: what changed/);
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  const start = on("UserPromptSubmit", {
+    prompt: "i want to understand interface selection",
+  });
+  assert.match(ctx(start), /## skarp: big picture/);
+  assert.match(ctx(start), /understand interface selection\./);
+  assert.match(
+    ctx(start),
+    /"Does the big picture make sense\?".*"Proceed next", "Not understood", "Skip"/,
+  );
+  assert.doesNotMatch(ctx(start), /what do you think it does now/); // no opening guess (D182)
+  const write = on("PreToolUse", { tool_name: "Write", tool_input: { file_path: "/p/a.ts" } });
+  assert.equal(write.permissionDecision, "deny");
+  assert.equal(
+    on("PreToolUse", { tool_name: "Read", tool_input: { file_path: "/p/a.ts" } }),
+    undefined,
+  );
+
+  // the big picture written, its card not asked: it's due now
+  assert.match(on("Stop", { last_assistant_message: bigPicture }).reason, /now ask the card/);
+  const o0 = "Does the big picture make sense?";
+  assert.match(
+    on("PreToolUse", card(o0, "Yes", "No")).hookSpecificOutput.permissionDecisionReason,
+    /exactly these options/,
+  );
+  assert.equal(on("PreToolUse", card(o0, "Proceed next", "Not understood", "Skip")), undefined);
+  assert.match(ctx(on("PostToolUse", picked("Not understood"))), /simpler words/);
+  on("PreToolUse", card(o0, "Proceed next", "Not understood", "Skip"));
+  const orient = ctx(on("PostToolUse", picked("Proceed next")));
+  assert.match(orient, /"Where do we start\?".*"Picker", "Apply", "Skip"/);
+  // other tools wait for the card
+  assert.equal(on("PreToolUse", { tool_name: "Read" }).permissionDecision, "deny");
+  on("PreToolUse", card("Where do we start?", "Picker", "Apply"));
+  const part = ctx(on("PostToolUse", picked("Picker")));
+  assert.match(part, /explain only this part: Picker/);
+  assert.match(part, /Fill the gap \(K8\)/);
+
+  // the part's card asks its blank; without one it's refused, and the refusal isn't a skip
+  assert.match(
+    on("PreToolUse", card("Did that make sense?", "Not understood")).hookSpecificOutput
+      .permissionDecisionReason,
+    /Fill the gap statement/,
+  );
+  assert.equal(on("PostToolUseFailure", { tool_name: "AskUserQuestion" }), undefined);
+  assert.equal(
+    on(
+      "PreToolUse",
+      card("pick() keeps only the interfaces that are ___ (src/pick.ts:3).", "Not understood"),
+    ),
+    undefined,
+  );
+  const next = ctx(on("PostToolUse", picked("the ones that are up")));
+  assert.match(next, /"Next piece\?".*"Apply", "Done for now", "Skip"/);
+  on("PreToolUse", card("Next piece?", "Apply", "Done for now"));
+  const end = ctx(on("PostToolUse", picked("Done for now")));
+  assert.match(end, /## skarp: understood so far/);
+  assert.match(end, /Picker: answered/);
+  assert.match(end, /not covered \(Apply\)/);
+  assert.match(end, /"In one line: how does interface selection work\?"/);
+  on(
+    "PreToolUse",
+    card("In one line: how does interface selection work?", "Not yet"),
+  );
+  assert.match(ctx(on("PostToolUse", picked("it filters, then applies"))), /what in it matches/);
+  // the walk-through is over: "build it" starts a task from what was explained
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "build it" })),
+    /interface selection/,
+  );
+});
+
+test("understand: a big picture missing its parts is sent back; asked as text, a typed answer counts", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "can you explain the repo to me" });
+  assert.match(
+    on("Stop", { last_assistant_message: "It's a CLI." }).reason,
+    /understand check:[\s\S]*## skarp: big picture/,
+  );
+  const asText = `${bigPicture}\nDoes the big picture make sense?\n1. Proceed next\n2. Not understood\n3. Skip`;
+  assert.equal(on("Stop", { last_assistant_message: asText, stop_hook_active: true }), undefined);
+  // a question back is not the answer; "not understood", typed, is
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "what's a picker?" })), /still waiting/);
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "not understood" })), /simpler words/);
+  // a part written without its blank is sent back
+  on("Stop", { last_assistant_message: bigPicture });
+  on("UserPromptSubmit", { prompt: "proceed next" });
+  on("UserPromptSubmit", { prompt: "Apply" });
+  assert.match(
+    on("Stop", { last_assistant_message: onePart.replace(/pick\(\).*$/m, "It filters.") }).reason,
+    /ending in ___/,
+  );
+});
+
+test("understand: the feature is the target; three Not understood at most, then on", () => {
+  const { on } = session();
+  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
+    o.hookSpecificOutput.additionalContext;
+  on("UserPromptSubmit", { prompt: "how does the cart work?" });
+  on("Stop", { last_assistant_message: bigPicture });
+  const o0 = card("Does the big picture make sense?", "Proceed next", "Not understood");
+  const angles = [/simpler words/, /analogy/, /plainest form/];
+  for (const angle of angles) {
+    on("PreToolUse", o0);
+    assert.match(ctx(on("PostToolUse", picked("Not understood"))), angle);
+  }
+  on("PreToolUse", o0);
+  assert.match(ctx(on("PostToolUse", picked("Not understood"))), /Where do we start\?/);
+  on("PreToolUse", card("Where do we start?", "Picker", "Apply"));
+  assert.match(ctx(on("PostToolUse", picked("Apply"))), /explain only this part: Apply/);
+  on("Stop", { last_assistant_message: onePart });
+  assert.match(ctx(on("UserPromptSubmit", { prompt: "skip" })), /Next piece\?/);
+  on("UserPromptSubmit", { prompt: "Picker" });
+  on("Stop", { last_assistant_message: onePart });
+  assert.match(
+    ctx(on("UserPromptSubmit", { prompt: "the ones that are up" })),
+    /In one line: how does the cart work\?/,
+  );
 });
 
 test("brainstorm: your idea first, quiet while listing, stress, then a decision with your why, all recorded", () => {
@@ -728,19 +841,6 @@ test("the question as text: the AI's own numbered options are sent back once", (
   assert.match(text.reason, /exactly these options/);
 });
 
-test("an honest failing-test line doesn't block the own-words step after an explanation", () => {
-  const { on } = session();
-  on("UserPromptSubmit", { prompt: "explain the repo to me" });
-  answer(on, "a cart module", "beginner");
-  on("PostToolUse", { tool_name: "Bash", tool_input: { command: "node --test 2>&1 | tail -40" } });
-  const end = on("Stop", {
-    last_assistant_message: explained("Its test fails right now (1 pass, 1 fail)."),
-  });
-  assert.match(end.systemMessage, /explanation checked/);
-  const back = on("UserPromptSubmit", { prompt: "total adds price times qty" });
-  assert.match(back.hookSpecificOutput.additionalContext, /what in their answer matches the code/);
-});
-
 test("brainstorm: 'end brainstorm' only ends it, and a later resume brings it back", () => {
   const { on } = session();
   const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
@@ -809,7 +909,7 @@ test("Copilot: ask_user is the question tool, its answer is read, and a replayed
   assert.doesNotMatch(ledger, /"type":"answer"[^\n]*skarp: ask the user/);
 });
 
-test("end checks: options sent back on the second Stop, a test-only bug fix, no 'unbacked' in explanations", () => {
+test("end checks: options sent back on the second Stop, and a test-only bug fix", () => {
   const { on } = session();
   on("UserPromptSubmit", { prompt: "add a logger to src/a.ts" });
   on("Stop", { last_assistant_message: "Which part?" });
@@ -830,12 +930,6 @@ test("end checks: options sent back on the second Stop, a test-only bug fix, no 
     bug.on("Stop", { last_assistant_message: report() }).reason,
     /changed only test files/,
   );
-
-  const ex = session();
-  ex.on("UserPromptSubmit", { prompt: "explain the repo to me" });
-  answer(ex.on, "a cart", "beginner");
-  const end = ex.on("Stop", { last_assistant_message: explained("I've added a diagram above.") });
-  assert.match(end.systemMessage, /explanation checked/);
 });
 
 test("follow-ups: done words anywhere, 'still failing' after the report reopens, chat with nothing changed is chat", () => {
@@ -863,25 +957,6 @@ test("follow-ups: done words anywhere, 'still failing' after the report reopens,
   answer(quiet.on, "src/api.ts", "beginner");
   quiet.on("Stop", { last_assistant_message: "Looking first." });
   assert.equal(quiet.on("UserPromptSubmit", { prompt: "how's the weather" }), undefined);
-});
-
-test("explain: a quick question or a bare level doesn't get stuck behind the guess; build it keeps the topic", () => {
-  const { on } = session();
-  const ctx = (o: { hookSpecificOutput: { additionalContext: string } }) =>
-    o.hookSpecificOutput.additionalContext;
-  on("UserPromptSubmit", { prompt: "explain the repo to me" });
-  assert.match(
-    ctx(on("UserPromptSubmit", { prompt: "level advanced" })),
-    /set their level to advanced/,
-  );
-  assert.equal(on("UserPromptSubmit", { prompt: "is there a bug in applyDiscount?" }), undefined);
-
-  const ex = session();
-  ex.on("UserPromptSubmit", { prompt: "explain how the cart works" });
-  answer(ex.on, "it sums items", "beginner");
-  ex.on("Stop", { last_assistant_message: explained() });
-  const build = ex.on("UserPromptSubmit", { prompt: "build it" });
-  assert.match(ctx(build), /explain how the cart works/);
 });
 
 test("ledger: a new task's user_message carries the new task's id; the grade has its wording", () => {
