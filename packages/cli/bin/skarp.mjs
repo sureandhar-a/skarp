@@ -195,6 +195,26 @@ export function status({ home, cwd, out = console.log } = {}) {
           `  ✗ fill: missed${r.round >= 1 ? ", plain answer given" : ", explained another way"} (${r.fact})`,
         );
     }
+    // understand: each part and what its check came to, the last line per part; never the fill
+    const checks = new Map();
+    for (const l of t.filter((l) => l.type === "understand_check")) checks.set(l.payload.part, l);
+    for (const [part, l] of checks) {
+      const r = l.payload;
+      const said = r.not_run
+        ? ["-", "answered, not checked (the cited line can't be read)"]
+        : ({
+            pass: ["✓", `matched the code at ${r.fact}`],
+            miss: [
+              "✗",
+              r.round >= 1 ? "missed, plain answer given" : "missed, explained another way",
+            ],
+            not_yet: ["-", "not yet (kept as owed)"],
+            unclear: ["-", "still unclear (kept as owed)"],
+          }[r.result] ?? ["-", r.result]);
+      out(`  ${said[0]} part ${part}: ${said[1]}`);
+    }
+    const shelf = t.filter((l) => l.type === "shelf").at(-1);
+    if (shelf) out(`  on the Shelf: ${shelf.payload.parts.join(", ")}`);
     // the opening Return: a recall of an earlier fill, or a question put off before
     const recall = t.filter((l) => l.type === "recall").at(-1);
     if (recall)

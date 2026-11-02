@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { brainstormFixes, brainstormSummary, highStakes, parseMap } from "./modes.ts";
+import {
+  brainstormFixes,
+  brainstormSummary,
+  highStakes,
+  hintsFor,
+  OVERVIEW_REPORT,
+  overviewRules,
+  PART_REPORT,
+  parseMap,
+  partRules,
+  partsIn,
+  understoodQuestion,
+  understoodRules,
+} from "./modes.ts";
 
 const map = (...lines: string[]) => `### skarp map\n${lines.map((l) => `- ${l}`).join("\n")}`;
 
@@ -92,4 +105,38 @@ test("the summary keeps who raised what, the decision in the user's words, and c
   assert.match(sum.md, /covered 1 of 8/);
   assert.equal(sum.byYou, 1);
   assert.equal(sum.byAi, 1);
+});
+
+test("understand: the big picture's parts are read from The main parts, at most four", () => {
+  const reply = `## skarp: big picture\n### What it is\nx\n### What it solves\ny\n### The main parts\n- **Picker**: lists interfaces (src/pick.c)\n- **Apply**: applies it (src/apply.c)\nThey connect in order.\n### Next\n- **Not a part**: x`;
+  assert.deepEqual(partsIn(reply), ["Picker", "Apply"]);
+  assert.deepEqual(partsIn("no big picture here"), []);
+});
+
+test("understand: each step names its report, and Not understood tells it from a new angle", () => {
+  assert.match(overviewRules("interface selection", "beginner"), new RegExp(OVERVIEW_REPORT.head));
+  assert.doesNotMatch(overviewRules("x", "beginner"), /simpler words/);
+  assert.match(overviewRules("x", "beginner", 1), /simpler words/);
+  assert.match(overviewRules("x", "beginner", 2), /analogy/);
+  assert.match(overviewRules("x", "beginner", 9), /plainest form/); // capped at the third angle
+  const part = partRules("Picker", "advanced");
+  assert.match(part, new RegExp(PART_REPORT.head));
+  assert.match(part, /Fill the gap \(K8\)/);
+  assert.doesNotMatch(part, /New ideas/);
+  assert.deepEqual(hintsFor("O0"), ["Proceed next", "Not understood"]);
+});
+
+test("understand: the closing question reads well for a thing and for a how-question", () => {
+  assert.equal(understoodQuestion("the cart"), "In one line: how does the cart work?");
+  assert.equal(
+    understoodQuestion("how trace search works in jaeger-ui"),
+    "In one line: how trace search works in jaeger-ui?",
+  );
+});
+
+test("understand: the ending lists what each part came to and what's left", () => {
+  const r = understoodRules([{ part: "Picker", result: "matched at src/pick.c:4" }], ["Apply"]);
+  assert.match(r, /Picker: matched at src\/pick.c:4/);
+  assert.match(r, /not covered \(Apply\)/);
+  assert.match(understoodRules([], []), /Nothing left/);
 });

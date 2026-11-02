@@ -70,6 +70,15 @@ test("status reads the ledger without printing what anyone wrote; remove deletes
       line("recall", { fact: "src/a.ts:2", result: "pass" }),
       line("hear", { fixes: [] }),
       line("hear_check", { result: "miss", round: 0, fact: "src/a.ts:2", text: "my private fill" }),
+      line("understand_check", { part: "Picker", result: "miss", round: 0, text: "private one" }),
+      line("understand_check", {
+        part: "Picker",
+        result: "pass",
+        fact: "src/p.ts:3",
+        text: "private two",
+      }),
+      line("understand_check", { part: "Apply", result: "not_yet" }),
+      line("shelf", { parts: ["Config"] }),
     ].join("\n"),
   );
   const q = quiet();
@@ -82,6 +91,10 @@ test("status reads the ledger without printing what anyone wrote; remove deletes
   assert.match(text, /✗ fill: missed, explained another way \(src\/a\.ts:2\)/);
   assert.match(text, /✓ recall: matched \(src\/a\.ts:2\)/);
   assert.doesNotMatch(text, /my private fill/);
+  assert.match(text, /✓ part Picker: matched the code at src\/p\.ts:3/);
+  assert.match(text, /- part Apply: not yet \(kept as owed\)/);
+  assert.match(text, /on the Shelf: Config/);
+  assert.doesNotMatch(text, /private (one|two)/);
   remove({ ...d, out: quiet().out });
   assert.ok(!existsSync(p.userHooks));
   assert.ok(!existsSync(p.hook));

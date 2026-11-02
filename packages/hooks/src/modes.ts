@@ -1,4 +1,4 @@
-// skarp's modes beside a task: explain and brainstorm. Each has its own report, checked in code
+// skarp's modes beside a task: understand and brainstorm. Each has its own report, checked in code
 // like the task report; the rules are only what the AI is told, the checks are what counts.
 
 export type Mode = "task" | "explain" | "brainstorm";
@@ -22,37 +22,91 @@ export const TASK_REPORT: ReportShape = {
   ],
 };
 
-export const EXPLAIN_REPORT: ReportShape = {
-  head: "## skarp: explained",
-  sections: [
-    "Big picture",
-    "Diagram",
-    "Key pieces",
-    "How a request flows",
-    "New ideas",
-    "Where to start reading",
-    "Your guess vs the code",
-    "Your turn",
-  ],
+// --- Understanding a target (framework §18, D179-D185): the big picture, then one part at a
+// time with a checked blank, then the next part; the cards move it, the AI writes each step ---
+
+export const OVERVIEW_REPORT: ReportShape = {
+  head: "## skarp: big picture",
+  sections: ["What it is", "What it solves", "The main parts"],
 };
+export const PART_REPORT: ReportShape = {
+  head: "## skarp: one part",
+  sections: ["What it is", "Why it exists", "How it works", "Fill the gap"],
+};
+export const UNDERSTOOD_REPORT: ReportShape = {
+  head: "## skarp: understood so far",
+  sections: ["Covered", "Not yet"],
+};
+// O0's options (D179); O1 and O2 offer the parts the big picture named
+export const BIG_PICTURE_HINTS = ["Proceed next", "Not understood"];
+export const PART_HINTS = ["Not understood"]; // the K8 card: free text is the fill (D184)
+export const DONE_FOR_NOW = "Done for now";
+export const MAX_RETELLS = 3; // "Not understood" gets up to 3 new angles (D180)
+// "how trace search works" is already a how-question; "the cart" needs one around it
+export const understoodQuestion = (target: string) =>
+  /^how\b/i.test(target) ? `In one line: ${target}?` : `In one line: how does ${target} work?`;
 
-export const EXPLAIN_QUESTION =
-  "Before the explanation: what do you think it does now, and which part matters most to you?";
-// options come from code, never from the AI's own guesses: the user's view comes first
-export const EXPLAIN_HINTS = ["I'll type my guess", "No idea yet"];
-export const EXPLAIN_BACK = "In your own words: this works because ___";
+// each "Not understood" tells it from a new angle; the third is the plainest form (D180)
+const ANGLES = [
+  "",
+  "The user didn't follow it. Tell it again in simpler words, with one concrete example from this code.",
+  "The user still didn't follow it. Tell it again with an everyday analogy, then map the analogy back to the code.",
+  "The user still didn't follow it. Give the plainest form: each part in one short line, no terms left unexplained.",
+];
 
-export function explainRules(guess?: string): string {
+// the parts the big picture named: "- **Name**: one line (path)" under The main parts
+export function partLines(reply: string): { name: string; path?: string }[] {
+  const at = reply.indexOf(`### ${OVERVIEW_REPORT.sections[2]}`);
+  if (at < 0) return [];
+  const body = reply.slice(at).split("\n").slice(1);
+  const end = body.findIndex((l) => /^#{2,3} /.test(l));
+  return (end < 0 ? body : body.slice(0, end))
+    .flatMap((l) => {
+      const name = l.match(/^\s*[-*]\s+\*\*(.+?)\*\*/)?.[1]?.trim();
+      const path = l.match(/\(([^()]*[./][^()]*)\)\s*$/)?.[1]?.trim();
+      return name ? [{ name, path }] : [];
+    })
+    .slice(0, 4);
+}
+export const partsIn = (reply: string) => partLines(reply).map((p) => p.name);
+
+export function overviewRules(target: string, level: string, round = 0): string {
   return [
-    `skarp explain: read what you need, then end your reply with a section headed exactly \`${EXPLAIN_REPORT.head}\`, with these sub-headings in this order: ${EXPLAIN_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
-    "Big picture: what it is for, in a few lines. Diagram: plain-text box-and-arrow diagrams of the main parts and how data flows; mark unknown links with `?`. Key pieces: the files or modules that matter, one line each with its path. How a request flows: one real path through the code, step by step, with file names.",
-    "New ideas: any concept or term the user may not know, explained. Where to start reading: 2-3 files in order, and why.",
-    guess
-      ? `Your guess vs the code: the user guessed "${guess}". Say plainly what matches the code and what doesn't, citing files.`
-      : "Your guess vs the code: compare the user's answer to skarp's question with the code; if they gave none, write \"No guess given.\"",
-    `Your turn: end with exactly this question for the user: "${EXPLAIN_BACK}"`,
-    "Explain mode changes no files: skarp refuses writes. If the user wants a change, they say 'build it' and it becomes a task.",
+    `skarp understand: the user wants to understand ${target}. Read the code you need first; change no files.`,
+    ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
+    `Write the big picture in a section headed exactly \`${OVERVIEW_REPORT.head}\`, with these sub-headings in this order: ${OVERVIEW_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    "What it is: one or two plain sentences, as if the user has never seen it. What it solves: the problem it exists for here.",
+    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)` with the path from the project root, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
+    "Do not go into any one part yet: the user picks where to start next.",
+    DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
     "Never praise.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function partRules(part: string, level: string, round = 0): string {
+  return [
+    `skarp understand: explain only this part: ${part}. Change no files.`,
+    ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
+    `Write it in a section headed exactly \`${PART_REPORT.head}\`, with these sub-headings in this order: ${PART_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    "What it is: one or two plain sentences. Why it exists: the problem it solves here. How it works: 3-6 steps, each citing file:line; a plain-text diagram only if there is a flow worth drawing.",
+    "Explain each term where it first comes up.",
+    K8_RULE,
+    DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
+    "Never praise.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// the ending (D185): what each part came to, then the A10 card
+export function understoodRules(results: { part: string; result: string }[], left: string[]) {
+  return [
+    `skarp understand: end with a section headed exactly \`${UNDERSTOOD_REPORT.head}\`, with these sub-headings in this order: ${UNDERSTOOD_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    `Covered: one line per part, with what skarp recorded: ${results.map((r) => `${r.part}: ${r.result}`).join("; ") || "none"}.`,
+    `Not yet: ${left.length ? `the parts not covered (${left.join(", ")}); skarp keeps them for later.` : 'write "Nothing left."'}`,
+    "Change no files. Never praise.",
   ].join("\n");
 }
 
@@ -77,7 +131,7 @@ const DEPTH_FOR: Record<string, string> = {
 
 // K8's blank: a statement with its conclusion blanked, then the line that shows the answer
 const K8_RULE =
-  'Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user\'s fill.';
+  'Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer, its path from the project root. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user\'s fill.';
 
 export function hearRules(view: string | undefined, level: string, light: boolean): string {
   return [
@@ -329,7 +383,7 @@ const HINTS: Record<string, string[]> = {
   "LS-B7": ["I'll write it", "Not sure yet"], // try it once yourself
   R21: ["The test is wrong", "The code is wrong", "Not sure yet"], // test-only change
   "read-back": ["I'll type it", "Not sure yet"], // what does this destroy
-  EX1: EXPLAIN_HINTS,
+  O0: BIG_PICTURE_HINTS,
   BS1: BS_HINTS,
 };
 export const hintsFor = (block: string) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];

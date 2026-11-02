@@ -38,8 +38,16 @@ const list = [
     question_text: "Try it once yourself first. What would you write?",
     opt_in: true,
   },
-  // Understand: pick a piece, hear it, a check, the next piece. Orient is a choice,
-  // never graded; the pieces and "Next piece?" choices come from core, not the model.
+  // Understand: the big picture, pick a piece, hear it, a check, the next piece. Orient is a
+  // choice, never graded (D179); the pieces and "Next piece?" choices come from core, not the model.
+  {
+    id: "O0",
+    intent: "orient",
+    cost: "tap",
+    answer_type: "choice",
+    brief: "After the big picture, ask whether it makes sense before picking a piece.",
+    question_text: "Does the big picture make sense?",
+  },
   {
     id: "O1",
     intent: "orient",

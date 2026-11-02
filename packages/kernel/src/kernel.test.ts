@@ -125,10 +125,10 @@ test("understand: a wish to understand plus a target; without a target it stays 
   assert.deepEqual(findTarget("understand this repo"), { kind: "repo" });
 });
 
-test("understand opens with Where do we start, even with a task in it, and never fades", () => {
+test("understand opens with the big picture, even with a task in it, and never fades", () => {
   const text = "help me understand and fix the bug in src/auth";
-  assert.equal(pick({ text }), "O1");
-  assert.equal(pick({ text, rung: 2 }), "O1");
+  assert.equal(pick({ text }), "O0");
+  assert.equal(pick({ text, rung: 2 }), "O0");
   // once oriented, the task in it gets its normal opening
   assert.equal(pick({ text, satisfiedIntents: ["orient"] }), "A14");
   assert.equal(

@@ -169,9 +169,9 @@ function pickBlock(input: KernelInput): KernelOutput {
       // a quick question is answered first; the owed one waits for after it
       if (input.owedBefore && !done("return") && (kind === "task" || kind === "understand"))
         return ask(BLOCKS.X1, "You put this off in an earlier chat; it comes back small.");
-      // understanding opens by picking where to start, before any task in it
+      // understanding opens with the big picture, then where to start, before any task in it (D179)
       if (kind === "understand" && !done("orient")) {
-        return ask(BLOCKS.O1, "New ground: pick a piece, and we go one at a time.");
+        return ask(BLOCKS.O0, "New ground: the big picture first, then one piece at a time.");
       }
       if (done("commit")) return { action: "continue" };
       // chat gets silence; a quick question gets the answer first; only a task needs Commit

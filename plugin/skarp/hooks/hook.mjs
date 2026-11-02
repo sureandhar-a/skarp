@@ -47,8 +47,16 @@ var list = [
     question_text: "Try it once yourself first. What would you write?",
     opt_in: true
   },
-  // Understand: pick a piece, hear it, a check, the next piece. Orient is a choice,
-  // never graded; the pieces and "Next piece?" choices come from core, not the model.
+  // Understand: the big picture, pick a piece, hear it, a check, the next piece. Orient is a
+  // choice, never graded (D179); the pieces and "Next piece?" choices come from core, not the model.
+  {
+    id: "O0",
+    intent: "orient",
+    cost: "tap",
+    answer_type: "choice",
+    brief: "After the big picture, ask whether it makes sense before picking a piece.",
+    question_text: "Does the big picture make sense?"
+  },
   {
     id: "O1",
     intent: "orient",
@@ -369,7 +377,7 @@ function pickBlock(input) {
       if (input.owedBefore && !done("return") && (kind === "task" || kind === "understand"))
         return ask(BLOCKS.X1, "You put this off in an earlier chat; it comes back small.");
       if (kind === "understand" && !done("orient")) {
-        return ask(BLOCKS.O1, "New ground: pick a piece, and we go one at a time.");
+        return ask(BLOCKS.O0, "New ground: the big picture first, then one piece at a time.");
       }
       if (done("commit"))
         return { action: "continue" };
@@ -660,31 +668,71 @@ var TASK_REPORT = {
     "Not yet"
   ]
 };
-var EXPLAIN_REPORT = {
-  head: "## skarp: explained",
-  sections: [
-    "Big picture",
-    "Diagram",
-    "Key pieces",
-    "How a request flows",
-    "New ideas",
-    "Where to start reading",
-    "Your guess vs the code",
-    "Your turn"
-  ]
+var OVERVIEW_REPORT = {
+  head: "## skarp: big picture",
+  sections: ["What it is", "What it solves", "The main parts"]
 };
-var EXPLAIN_QUESTION = "Before the explanation: what do you think it does now, and which part matters most to you?";
-var EXPLAIN_HINTS = ["I'll type my guess", "No idea yet"];
-var EXPLAIN_BACK = "In your own words: this works because ___";
-function explainRules(guess) {
+var PART_REPORT = {
+  head: "## skarp: one part",
+  sections: ["What it is", "Why it exists", "How it works", "Fill the gap"]
+};
+var UNDERSTOOD_REPORT = {
+  head: "## skarp: understood so far",
+  sections: ["Covered", "Not yet"]
+};
+var BIG_PICTURE_HINTS = ["Proceed next", "Not understood"];
+var PART_HINTS = ["Not understood"];
+var DONE_FOR_NOW = "Done for now";
+var MAX_RETELLS = 3;
+var understoodQuestion = (target) => /^how\b/i.test(target) ? `In one line: ${target}?` : `In one line: how does ${target} work?`;
+var ANGLES = [
+  "",
+  "The user didn't follow it. Tell it again in simpler words, with one concrete example from this code.",
+  "The user still didn't follow it. Tell it again with an everyday analogy, then map the analogy back to the code.",
+  "The user still didn't follow it. Give the plainest form: each part in one short line, no terms left unexplained."
+];
+function partLines(reply) {
+  const at = reply.indexOf(`### ${OVERVIEW_REPORT.sections[2]}`);
+  if (at < 0) return [];
+  const body = reply.slice(at).split("\n").slice(1);
+  const end = body.findIndex((l) => /^#{2,3} /.test(l));
+  return (end < 0 ? body : body.slice(0, end)).flatMap((l) => {
+    const name = l.match(/^\s*[-*]\s+\*\*(.+?)\*\*/)?.[1]?.trim();
+    const path = l.match(/\(([^()]*[./][^()]*)\)\s*$/)?.[1]?.trim();
+    return name ? [{ name, path }] : [];
+  }).slice(0, 4);
+}
+var partsIn = (reply) => partLines(reply).map((p) => p.name);
+function overviewRules(target, level, round = 0) {
   return [
-    `skarp explain: read what you need, then end your reply with a section headed exactly \`${EXPLAIN_REPORT.head}\`, with these sub-headings in this order: ${EXPLAIN_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
-    "Big picture: what it is for, in a few lines. Diagram: plain-text box-and-arrow diagrams of the main parts and how data flows; mark unknown links with `?`. Key pieces: the files or modules that matter, one line each with its path. How a request flows: one real path through the code, step by step, with file names.",
-    "New ideas: any concept or term the user may not know, explained. Where to start reading: 2-3 files in order, and why.",
-    guess ? `Your guess vs the code: the user guessed "${guess}". Say plainly what matches the code and what doesn't, citing files.` : `Your guess vs the code: compare the user's answer to skarp's question with the code; if they gave none, write "No guess given."`,
-    `Your turn: end with exactly this question for the user: "${EXPLAIN_BACK}"`,
-    "Explain mode changes no files: skarp refuses writes. If the user wants a change, they say 'build it' and it becomes a task.",
+    `skarp understand: the user wants to understand ${target}. Read the code you need first; change no files.`,
+    ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
+    `Write the big picture in a section headed exactly \`${OVERVIEW_REPORT.head}\`, with these sub-headings in this order: ${OVERVIEW_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    "What it is: one or two plain sentences, as if the user has never seen it. What it solves: the problem it exists for here.",
+    "The main parts: 2-4 parts, one line each, written as `- **Part name**: what it does (path/to/file)` with the path from the project root, then how they connect. Add a plain-text box-and-arrow diagram only if there is a flow worth drawing; mark unknown links with `?`.",
+    "Do not go into any one part yet: the user picks where to start next.",
+    DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
     "Never praise."
+  ].filter(Boolean).join("\n");
+}
+function partRules(part, level, round = 0) {
+  return [
+    `skarp understand: explain only this part: ${part}. Change no files.`,
+    ANGLES[Math.min(round, MAX_RETELLS)] ?? "",
+    `Write it in a section headed exactly \`${PART_REPORT.head}\`, with these sub-headings in this order: ${PART_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    "What it is: one or two plain sentences. Why it exists: the problem it solves here. How it works: 3-6 steps, each citing file:line; a plain-text diagram only if there is a flow worth drawing.",
+    "Explain each term where it first comes up.",
+    K8_RULE,
+    DEPTH_FOR[level] ?? DEPTH_FOR.intermediate,
+    "Never praise."
+  ].filter(Boolean).join("\n");
+}
+function understoodRules(results, left) {
+  return [
+    `skarp understand: end with a section headed exactly \`${UNDERSTOOD_REPORT.head}\`, with these sub-headings in this order: ${UNDERSTOOD_REPORT.sections.map((s) => `### ${s}`).join(", ")}.`,
+    `Covered: one line per part, with what skarp recorded: ${results.map((r) => `${r.part}: ${r.result}`).join("; ") || "none"}.`,
+    `Not yet: ${left.length ? `the parts not covered (${left.join(", ")}); skarp keeps them for later.` : 'write "Nothing left."'}`,
+    "Change no files. Never praise."
   ].join("\n");
 }
 var HEAR_REPORT = {
@@ -696,7 +744,7 @@ var DEPTH_FOR = {
   intermediate: "The user is intermediate: explain the key code and the parts their view missed in full, the rest briefly.",
   advanced: "The user is advanced: explain the current code and the change concisely, focusing on design choices and risks."
 };
-var K8_RULE = `Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user's fill.`;
+var K8_RULE = `Fill the gap (K8): one statement, not a question, about the key step of what you explained, with its conclusion replaced by ___ at the end, followed by the file:line that shows the answer, its path from the project root. Example: "applyDiscount subtracts ___ (src/cart.js:7)." Then stop and wait for the user's fill.`;
 function hearRules(view, level, light) {
   return [
     "skarp Hear: do not change any files yet; skarp refuses writes until the user has filled the gap. Read the code you need first.",
@@ -880,7 +928,7 @@ var HINTS = {
   // test-only change
   "read-back": ["I'll type it", "Not sure yet"],
   // what does this destroy
-  EX1: EXPLAIN_HINTS,
+  O0: BIG_PICTURE_HINTS,
   BS1: BS_HINTS
 };
 var hintsFor = (block) => HINTS[block] ?? ["I'll type my answer", "Not sure yet"];
@@ -1087,6 +1135,129 @@ ${rulesFor(s, levelNow())}`}`;
     log("ask", { block: next.block, reason: next.reason });
     return `${feedback}${askRule(next.question, next.reason, hintRule(hintsFor(next.block)), next.level, next.block === BUG_BLOCK)}`;
   };
+  const undGo = (u, step, part) => {
+    Object.assign(u, { step, retells: 0, fixed: 0 }, part ? { part, misses: 0 } : {});
+    if (part) s.standText = void 0;
+    const due = {
+      orient: ["O1", BLOCKS.O1.question_text],
+      next: ["O2", BLOCKS.O2.question_text],
+      end: ["A10", understoodQuestion(u.target)]
+    };
+    const card = due[step];
+    s.asking = card ? { block: card[0], question: card[1], level: false } : void 0;
+    if (card) log("ask", { block: card[0], reason: "understand" });
+    s.sentBack = false;
+    log("understand_step", { step, part: u.part });
+    return understandRules(u, levelNow());
+  };
+  const retell = (u) => {
+    u.retells++;
+    Object.assign(s, { asking: void 0, sentBack: false });
+    log("retell", { step: u.step, part: u.part, round: u.retells });
+    return understandRules(u, levelNow());
+  };
+  const undAnswer = (u, said) => {
+    const block = s.asking?.block ?? "";
+    const text = said?.trim() ?? "";
+    const skipped = said === void 0 || /^(skip|not yet)\b/i.test(text);
+    const lost = !skipped && /^not understood\b/i.test(text);
+    log(skipped ? "answer_skipped" : "answer", { block, text: said });
+    s.asking = void 0;
+    if (block === "O0") {
+      if (lost && u.retells < MAX_RETELLS) return retell(u);
+      if (lost) log("still_unclear", { block });
+      return u.parts.length === 1 ? undGo(u, "part", u.parts[0]) : undGo(u, "orient");
+    }
+    if (block === "O1" || block === "O2") {
+      if (block === "O2" && (skipped || /^done for now\b/i.test(text))) return undGo(u, "end");
+      const low = text.toLowerCase();
+      const pick = u.parts.find(
+        (p) => low && (low.includes(p.toLowerCase()) || p.toLowerCase().includes(low))
+      );
+      return undGo(u, "part", pick ?? openParts(u)[0] ?? (text || u.target));
+    }
+    if (block === "K8") {
+      if (lost && u.retells < MAX_RETELLS) return retell(u);
+      const part = u.part ?? u.target;
+      const settle = (result, note = "") => {
+        u.results.push({ part, result, text: s.standText });
+        return `${note}${openParts(u).length ? undGo(u, "next") : undGo(u, "end")}`;
+      };
+      const owe = (reason) => log("owed", { block: "K8", question: s.blank ?? "", reason });
+      if (skipped || lost) {
+        log("understand_check", {
+          block: "K8",
+          part,
+          fact: s.fact,
+          result: skipped ? "not_yet" : "unclear"
+        });
+        owe(skipped ? "skipped" : "still unclear");
+        return settle(skipped ? "put off" : "still unclear");
+      }
+      if (saysNotYet(text)) {
+        log("understand_check", { block: "K8", part, fact: s.fact, result: "not_yet" });
+        owe("not sure");
+        return settle(
+          "not sure yet",
+          `The user isn't sure yet (skarp keeps it as owed). Give the plain answer in two or three lines, citing ${s.fact ?? "the line"}, without judging them.
+`
+        );
+      }
+      const lines = factLines(input.cwd, s.fact);
+      if (lines === void 0 && !s.standText) {
+        log("understand_check", {
+          block: "K8",
+          part,
+          fact: s.fact,
+          not_run: "the cited line can't be read"
+        });
+        return settle("answered, not checked");
+      }
+      const fails = checkAnswer(
+        text,
+        factEvidence(input.cwd, s.fact, s.standText ?? ""),
+        s.standText ?? ""
+      );
+      if (fails.includes("empty") || fails.includes("injection")) {
+        s.asking = { block: "K8", question: s.blank ?? "", level: false };
+        return `The user's answer doesn't fill the gap. Ask them again, with the card, to fill in: "${s.blank ?? "the blank"}". Change no files.`;
+      }
+      const round = u.misses ?? 0;
+      log("understand_check", {
+        block: "K8",
+        part,
+        fact: s.fact,
+        result: fails.length ? "miss" : "pass",
+        fails,
+        round,
+        text,
+        fact_read: lines !== void 0
+      });
+      if (!fails.length)
+        return settle(
+          `matched at ${s.fact}`,
+          `The user's fill: "${text}". In one line, say what in it matches the code at ${s.fact} and what is missing. Never say 'correct'; no praise.
+`
+        );
+      u.misses = round + 1;
+      if (u.misses >= 2) {
+        owe("missed twice");
+        return settle(
+          "plain answer given",
+          `The user missed the gap again. Give the plain answer now, in simple words with one example from this code, citing ${s.fact ?? "the line"}. Never say they were wrong.
+`
+        );
+      }
+      s.sentBack = false;
+      return `Without judging the answer, explain that point another way: simpler words and a concrete example from this code. Then end with a new \`### Fill the gap\` from a new angle: one statement ending in ___, followed by the file:line that shows the answer. ${cardRule("that new statement, word for word, with its file:line", PART_HINTS, true)}`;
+    }
+    if (skipped) log("owed", { block: "A10", question: understoodQuestion(u.target) });
+    const shelf = openParts(u);
+    if (shelf.length) log("shelf", { target: u.target, parts: shelf });
+    saveWalkThrough(home, u, skipped ? void 0 : said, log);
+    Object.assign(s, { und: void 0, mode: void 0, reportDue: false, lastExplain: u.target });
+    return skipped ? "The user put the closing recall off; skarp keeps it as owed. Say so in one line." : `The user's one line: "${said}". In one or two lines, say what in it matches what was covered and what is missing, citing a file. Never say 'correct'; no praise.`;
+  };
   if (event === "UserPromptSubmit") {
     try {
       return onPrompt();
@@ -1106,28 +1277,14 @@ ${rulesFor(s, levelNow())}`}`;
     const level = levelIn(prompt);
     if (level) setLevel(level);
     const owed = s.explainOwed ? "skarp: your last change has no complete skarp report yet. Give it first, then go on.\n" : "";
-    if (s.explainBack && !s.asking) {
-      s.explainBack = false;
-      save();
-      const isNew = classifyMessage(prompt) === "task" || wantsExplain(prompt) || wantsBrainstorm(prompt);
-      if (!isNew && !/^(skip|not yet)\b/i.test(said)) {
-        log("explain_back", { text: prompt });
-        return context(
-          `The user answered skarp's "${EXPLAIN_BACK}": ${prompt}
-In one or two lines, say what in their answer matches the code and what is missing, citing files. No praise.`
-        );
-      }
-      log("explain_back_skipped", {});
-    }
     const asked2 = s.asking;
     const aside = SMALL_TALK.test(said) && said.split(/\s+/).length <= 3 || said.endsWith("?");
-    const dropExplain = asked2?.block === "EX1" && aside;
     if ((asked2?.block === "X8" || asked2?.block === "X1") && !REPLACES.test(said) && !aside) {
       const note = afterReturn(asked2, said);
       save();
       return context(note);
     }
-    if (asked2 && !REPLACES.test(said) && !dropExplain) {
+    if (asked2 && !REPLACES.test(said)) {
       if (level && !said.replace(LEVEL_SET, "").replace(/[\s.,!]/g, ""))
         return context(
           `The user set their level to ${level}. skarp's question is still waiting: "${asked2.question}". Ask it again (question card, or as a numbered list) and stop.`
@@ -1141,6 +1298,11 @@ In one or two lines, say what in their answer matches the code and what is missi
         /^(?:option\s*)?(\d+)\b[.)]?/i,
         (m, n) => asked2.options?.[Number(n) - 1] ?? m
       );
+      if (s.und) {
+        const note = undAnswer(s.und, answer);
+        save();
+        return context(note);
+      }
       if (skipped) {
         log("answer_skipped", { block: asked2.block, via: "typed" });
         log("owed", { block: asked2.block, question: asked2.question });
@@ -1351,15 +1513,17 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
       );
     }
     if (wantsExplain(prompt) && !BUILD_IT.test(said)) {
-      Object.assign(s, fresh(prompt, "explain"), {
-        block: "EX1",
-        asking: { block: "EX1", question: EXPLAIN_QUESTION, level: askLevel }
-      });
-      log("ask", { block: "EX1", reason: "explain: your guess first" });
+      const u = {
+        step: "overview",
+        target: targetOf(prompt),
+        parts: [],
+        retells: 0,
+        results: []
+      };
+      Object.assign(s, fresh(prompt, "explain"), { und: u });
+      log("understand_step", { step: "overview" });
       save();
-      return context(
-        `${owed}${askRule(EXPLAIN_QUESTION, "skarp asks for your own view before the AI's.", hintRule(hintsFor("EX1")), askLevel)}${rulesFor(s, level ?? profile.level ?? "intermediate")}`
-      );
+      return context(`${owed}${understandRules(u, level ?? profile.level ?? "intermediate")}`);
     }
     const outcomes = readOutcomes(home);
     const concept = matchConcept(prompt, [...new Set(outcomes.map((o) => o.concept))]);
@@ -1426,10 +1590,53 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
     save();
     return context(`${owed}${from}${ask2}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
   }
+  if (event === "PreToolUse" && s.und && ASK_TOOL.test(input.tool_name ?? "")) {
+    const u = s.und;
+    let card = s.asking;
+    let fixes = [];
+    if (card?.block === "O1" && !u.parts.length) u.parts = cardOptions(input.tool_input);
+    if (card) fixes = cardFixes(input.tool_input, card.question, cardHints(u, card.block));
+    else if (u.step === "overview") {
+      card = { block: "O0", question: BLOCKS.O0.question_text };
+      fixes = cardFixes(input.tool_input, card.question, BIG_PICTURE_HINTS);
+      const text = lastAssistantText(input.transcript_path);
+      const named = partsIn(text ?? "");
+      if (named.length) Object.assign(u, { parts: named, overview: text });
+      fixes.push(...citeFixes(input.cwd, partLines(text ?? "")));
+    } else if (u.step === "part") {
+      const k8 = blankIn(`### Fill the gap
+${cardQuestion(input.tool_input)}`);
+      s.standText = lastAssistantText(input.transcript_path) ?? s.standText;
+      card = { block: "K8", question: k8?.blank ?? "" };
+      fixes = [
+        ...k8 ? [] : [
+          "Ask your Fill the gap statement as the question: one statement ending in ___, then the file:line that shows the answer."
+        ],
+        ...citeFixes(input.cwd, k8 ? [{ name: "the blank", path: k8.fact }] : []),
+        ...cardFixes(input.tool_input, "", PART_HINTS)
+      ];
+      if (k8) Object.assign(s, k8);
+    }
+    if (!card) return void 0;
+    if (fixes.length && (u.fixed ?? 0) < 2) {
+      u.fixed = (u.fixed ?? 0) + 1;
+      s.refusedCard = true;
+      log("card_refused", { block: card.block, fixes });
+      save();
+      return deny(`skarp: fix the question card.
+- ${fixes.join("\n- ")}`);
+    }
+    u.fixed = 0;
+    s.asking = { block: card.block, question: card.question, level: false };
+    log("ask", { block: card.block, reason: "understand" });
+    save();
+    return void 0;
+  }
   if (event === "PreToolUse" && s.asking && ASK_TOOL.test(input.tool_name ?? "")) {
     const fixes = cardFixes(input.tool_input, s.asking.question, hintsFor(s.asking.block));
     if (fixes.length && (s.asking.fixed ?? 0) < 2) {
       s.asking.fixed = (s.asking.fixed ?? 0) + 1;
+      s.refusedCard = true;
       log("card_refused", { block: s.asking.block, fixes });
       save();
       return deny(`skarp: fix the question card.
@@ -1445,6 +1652,11 @@ After the answer:
 ${rulesFor(s, profile.level ?? "intermediate")}`
     );
   }
+  if (event === "PostToolUseFailure" && ASK_TOOL.test(input.tool_name ?? "") && s.refusedCard) {
+    s.refusedCard = false;
+    save();
+    return void 0;
+  }
   const asked = s.asking;
   if ((event === "PostToolUse" || event === "PostToolUseFailure") && ASK_TOOL.test(input.tool_name ?? "") && asked) {
     const answers = readAnswers(input.tool_response);
@@ -1453,6 +1665,12 @@ ${rulesFor(s, profile.level ?? "intermediate")}`
       additionalContext: note,
       hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: note }
     });
+    s.refusedCard = false;
+    if (s.und) {
+      const note = undAnswer(s.und, event === "PostToolUseFailure" ? void 0 : commit);
+      save();
+      return post(note);
+    }
     if (asked.block === "X8" || asked.block === "X1") {
       const note = afterReturn(asked, event === "PostToolUseFailure" ? void 0 : commit);
       save();
@@ -1532,6 +1750,60 @@ ${f.content}`;
     save();
     return void 0;
   }
+  if (event === "Stop" && s.und) {
+    const u = s.und;
+    const reply = input.last_assistant_message ?? lastAssistantText(input.transcript_path);
+    const may = !s.sentBack && !input.stop_hook_active;
+    const asText = (q) => Boolean(q && reply?.toLowerCase().includes(q.toLowerCase()));
+    if (s.asking) {
+      if (may && !asText(s.asking.question))
+        return sendBack(`skarp: ${understandRules(u, levelNow())}`);
+      return void 0;
+    }
+    if (u.step !== "overview" && u.step !== "part") return void 0;
+    const over = u.step === "overview";
+    const fixes = [];
+    if (reply === void 0)
+      log("referee", { check: u.step, not_run: "no reply text on this surface" });
+    else {
+      const retry = !over && (u.misses ?? 0) > 0;
+      if (!retry) fixes.push(...reportFixes(reply, over ? OVERVIEW_REPORT : PART_REPORT));
+      if (!over) s.standText = reply;
+      const named = over ? partsIn(reply) : [];
+      const k8 = over ? void 0 : blankIn(reply);
+      if (over && named.length) Object.assign(u, { parts: named, overview: reply });
+      if (k8) Object.assign(s, k8);
+      fixes.push(
+        ...citeFixes(
+          input.cwd,
+          over ? partLines(reply) : k8 ? [{ name: "the blank", path: k8.fact }] : []
+        )
+      );
+      if (!fixes.length && over && !named.length)
+        fixes.push(
+          "Under `### The main parts`, list each part as `- **Part name**: what it does (path)`."
+        );
+      if (!fixes.length && !over && !k8)
+        fixes.push(
+          "Under `### Fill the gap`, write one statement ending in ___ followed by the file:line that shows the answer."
+        );
+      log("referee", { check: u.step, fixes });
+      if (fixes.length && may)
+        return sendBack(
+          `skarp understand check:
+- ${fixes.join("\n- ")}
+${understandRules(u, levelNow())}`
+        );
+    }
+    const question = over ? BLOCKS.O0.question_text : s.blank ?? "";
+    s.asking = { block: over ? "O0" : "K8", question, level: false };
+    log("ask", { block: s.asking.block, reason: "understand" });
+    save();
+    const asked2 = over ? asText(question) : asText(question) && asText(PART_HINTS[0] ?? "");
+    if (may && !asked2)
+      return sendBack(`skarp: now ask the card. ${understandRules(u, levelNow())}`);
+    return void 0;
+  }
   if (event === "Stop" && s.mode === "brainstorm" && s.bs && !s.asking) {
     const bs = s.bs;
     const reply = input.last_assistant_message ?? lastAssistantText(input.transcript_path);
@@ -1591,7 +1863,7 @@ ${hearRules(s.answer, levelNow(), s.rung === 1)}`
     save();
     return void 0;
   }
-  if (event === "Stop" && (s.reportDue || s.asking)) {
+  if (event === "Stop" && s.mode !== "explain" && (s.reportDue || s.asking)) {
     if (s.asking) {
       if (!s.sentBack && !input.stop_hook_active)
         return sendBack(
@@ -1643,7 +1915,7 @@ ${hearRules(s.answer, levelNow(), s.rung === 1)}`
     saveReport(home, kind, reply, log);
     const kept = reply.split("### Kept")[1]?.split(/\n#{2,3} /)[0]?.trim();
     if (kind === "task" && kept) log("kept", { text: kept });
-    const shape = reportFixes(reply, kind === "explain" ? EXPLAIN_REPORT : TASK_REPORT);
+    const shape = reportFixes(reply, TASK_REPORT);
     const failed = new Set(
       checkReply(reply, void 0, [], {
         edited: s.touched.map((t) => t.path),
@@ -1652,7 +1924,6 @@ ${hearRules(s.answer, levelNow(), s.rung === 1)}`
         testsPassed: s.testsPassed
       }).filter((f) => f in REPORT_FAILS)
     );
-    if (kind === "explain") failed.delete("unbacked_action");
     if (MORE_PRAISE.test(reply)) failed.add("praise");
     const paths = s.touched.map((t) => t.path);
     if (s.block === BUG_BLOCK && paths.length && paths.every(isTestFile)) failed.add("test_only");
@@ -1662,22 +1933,14 @@ ${hearRules(s.answer, levelNow(), s.rung === 1)}`
       return sendBack(`skarp report check:
 - ${fixes.join("\n- ")}`);
     const lines = grade(s, sid, log);
-    if (kind === "explain")
-      lines.push(
-        fixes.length ? "skarp: the explanation is incomplete." : "skarp: explanation checked."
-      );
-    else
-      lines.push(
-        fixes.length ? "skarp: the report is incomplete; it is owed on your next message." : "skarp: report checked."
-      );
+    lines.push(
+      fixes.length ? "skarp: the report is incomplete; it is owed on your next message." : "skarp: report checked."
+    );
     Object.assign(s, {
       reportDue: false,
       sentBack: false,
       closing: false,
-      explainOwed: kind === "task" && fixes.length > 0,
-      // the own-words question was asked, whatever else the check found
-      explainBack: kind === "explain" && /### Your turn|this works because/i.test(reply),
-      lastExplain: kind === "explain" ? s.task : s.lastExplain
+      explainOwed: kind === "task" && fixes.length > 0
     });
     save();
     return { systemMessage: lines.join("\n") };
@@ -1816,7 +2079,7 @@ function fresh(task, mode) {
     testsPassed: void 0,
     reportDue: true,
     sentBack: false,
-    explainBack: false,
+    und: void 0,
     check: void 0,
     closing: false,
     hear: void 0,
@@ -1828,9 +2091,59 @@ function fresh(task, mode) {
     next: void 0
   };
 }
+function targetOf(prompt) {
+  const t = prompt.trim();
+  const m = t.match(/\bhow does (.+?) work\b/i) ?? t.match(/\bwhat does (.+?) do\b/i);
+  if (m?.[1]) return m[1].trim();
+  const rest = t.replace(
+    /^.*?\b(?:help me understand|understand|explain|walk me through|get to know|learn (?:how|about))\b\s*/i,
+    ""
+  ).replace(/\s*\bto me\b/i, "").replace(/[?.!\s]+$/, "").trim();
+  return rest || t;
+}
+var cardRule = (question, options, free = false) => `Then ask the user with your question tool (${ASK_NAMES}), one question with header "skarp": ${question}, with these options: ${[...options, "Skip"].map((o) => `"${o}"`).join(", ")}${free ? "; the user can also type their own answer" : ""}. Give no default or pre-filled answer. If that tool is not loaded, load it with ToolSearch first, without telling the user. If no question tool is available, write the question and its options as a numbered list and stop. Change no files.`;
+var openParts = (u) => u.parts.filter((p) => !u.results.some((r) => r.part === p));
+function understandRules(u, level) {
+  switch (u.step) {
+    case "overview":
+      return `${overviewRules(u.target, level, u.retells)}
+${cardRule(`"${BLOCKS.O0.question_text}"`, BIG_PICTURE_HINTS)}`;
+    case "orient":
+      return `skarp understand: the big picture is done; the user picks where to start. ${cardRule(`"${BLOCKS.O1.question_text}"`, u.parts.length ? u.parts : ["<each part the big picture named>"])}`;
+    case "part":
+      return `${partRules(u.part ?? u.target, level, u.retells)}
+${cardRule("your Fill the gap statement, word for word, with its file:line", PART_HINTS, true)}`;
+    case "next":
+      return `skarp understand: the user picks the next part. ${cardRule(`"${BLOCKS.O2.question_text}"`, [...openParts(u), DONE_FOR_NOW])}`;
+    case "end":
+      return `${understoodRules(u.results, openParts(u))}
+${cardRule(`"${understoodQuestion(u.target)}"`, ["Not yet"], true)}`;
+  }
+}
+function citeFixes(cwd, parts) {
+  if (!cwd || !existsSync(cwd)) return [];
+  const real = (p) => {
+    const f = p.replace(/[`'"]/g, "").replace(/:\d+(-\d+)?$/, "").trim();
+    return Boolean(f) && existsSync(isAbsolute(f) ? f : join(cwd, f));
+  };
+  return parts.flatMap(
+    ({ name, path }) => !path ? [
+      `Give the file for ${name} in brackets at the end of its line: \`- **${name}**: what it does (path)\`.`
+    ] : path.split(/,\s*/).some(real) ? [] : [`${path} isn't in this project: name the real file for ${name}.`]
+  );
+}
+function cardQuestion(input) {
+  const c = input;
+  return c?.questions?.[0]?.question ?? c?.message ?? "";
+}
+function cardOptions(input) {
+  const c = input;
+  const labels = c?.questions?.[0]?.options?.map((o) => typeof o === "string" ? o : o.label ?? "") ?? Object.values(c?.requestedSchema?.properties ?? {}).flatMap((f) => f.enum ?? []);
+  return labels.filter((l) => l && !/^skip$/i.test(l)).slice(0, 4);
+}
+var cardHints = (u, block) => block === "O1" ? u.parts : block === "O2" ? [...openParts(u), DONE_FOR_NOW] : block === "A10" ? ["Not yet"] : hintsFor(block);
 function rulesFor(s, level) {
-  if (s.mode === "explain") return `${explainRules(s.answer)}
-${DEPTH[level]}`;
+  if (s.und) return understandRules(s.und, level);
   return [
     PROGRESS_RULE,
     reportRules(level),
@@ -2051,7 +2364,7 @@ function deny(reason) {
 function askRule(question, reason, options, level, check = false) {
   return `${[
     `skarp rule, before anything else: ask the user with your question tool (${ASK_NAMES}), so they get a question card.`,
-    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed".`,
+    `Question 1, header "skarp": "${question}" (${reason}) Options: ${options} Then a last option labelled "Skip" described as "Go ahead without answering; skarp logs it as owed". Give no default or pre-filled answer: the user picks their own.`,
     check ? `Question 2, header "Check": "What would show it's fixed?" with options "A test passes", "I'll try it by hand", "Not sure"; the user can also type their own.` : "",
     level ? `Question ${check ? 3 : 2}, header "Level": "Your level, so skarp's explanations fit you?" with options "beginner", "intermediate", "advanced".` : "",
     "If that tool is not loaded, load it with ToolSearch first, without telling the user about it. If no question tool is available at all, write the question and its options as a numbered list (1., 2., ...) and stop; the user's next message is the answer.",
@@ -2065,8 +2378,8 @@ function standingRules(level) {
     `When the user gives a task or asks for an explanation, skarp asks its question first: use your question tool (${ASK_NAMES}), or write it as a numbered list and stop.`,
     "Before you change any file for a task on ground the user hasn't proven, skarp has you walk them through it (`## skarp: where you stand`, ending with one blank to fill) and refuses writes until they fill it or put it off.",
     reportRules(level),
-    `When the user asks you to explain code (no change), use the explain report instead:
-${explainRules()}`,
+    `When the user asks you to explain or understand code (no change), skarp walks them through it one step at a time, starting with the big picture:
+${understandRules({ step: "overview", target: "what they asked about", parts: [], retells: 0, results: [] }, level)}`,
     `When the user wants to brainstorm, skarp asks for their idea first, then you follow these rules every turn:
 ${brainstormRules("you-first", false)}`
   ].join("\n");
@@ -2076,6 +2389,36 @@ function startContext(text) {
     additionalContext: text,
     hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text }
   };
+}
+function saveWalkThrough(home, u, closing, log) {
+  const section = (text, head) => text?.includes(head) ? text.slice(text.indexOf(head)).trim() : void 0;
+  const shelf = u.parts.filter((p) => !u.results.some((r) => r.part === p));
+  const md = [
+    `# Understood: ${u.target}`,
+    section(u.overview, OVERVIEW_REPORT.head),
+    ...u.results.map(
+      (r) => [
+        `## ${r.part} (${r.result})`,
+        section(r.text, PART_REPORT.head)?.replace(PART_REPORT.head, "")
+      ].filter(Boolean).join("\n")
+    ),
+    `## Not yet
+${shelf.length ? shelf.map((p) => `- ${p}`).join("\n") : "Nothing left."}`,
+    `## In your own words
+${closing ?? "Not yet (owed)."}`
+  ].filter(Boolean).join("\n\n");
+  try {
+    const dir = join(home, "reports");
+    mkdirSync(dir, { recursive: true, mode: 448 });
+    const path = join(
+      dir,
+      `${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}-understand-${randomUUID().slice(0, 8)}.md`
+    );
+    writeFileSync(path, `${md}
+`, { mode: 384 });
+    log("report", { kind: "understand", path });
+  } catch {
+  }
 }
 function saveReport(home, kind, reply, log) {
   const at = reply.indexOf("## skarp:");
@@ -2143,6 +2486,7 @@ export {
   SECTIONS,
   askRule,
   blankIn,
+  citeFixes,
   dueFor,
   factEvidence,
   factLines,
@@ -2155,5 +2499,7 @@ export {
   reportFixes,
   reportRules,
   standingRules,
+  targetOf,
+  understandRules,
   writtenFiles
 };
