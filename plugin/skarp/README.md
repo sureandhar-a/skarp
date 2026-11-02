@@ -23,7 +23,7 @@ skarp picks one of three ways of working from your message.
 
 ### A brainstorm: "can we brainstorm on caching?", "I have a rough idea: …"
 
-The AI acts as a senior colleague who asks questions and stress-tests your ideas, built on the research in the [main README](../../README.md#brainstorm).
+The AI acts as a senior colleague who asks questions and stress-tests your ideas, built on the research in [How skarp works](../../HOW-IT-WORKS.md#brainstorm).
 
 1. **You first.** Your idea comes before any of the AI's ideas. Say "your ideas first" to skip (logged).
 2. **Quiet while you list.** The AI only acknowledges and asks "anything else?" until you say "done".
