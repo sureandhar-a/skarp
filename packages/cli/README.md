@@ -36,7 +36,9 @@ It writes `.github/hooks/skarp.json` and switches on `chat.useHooks` in `.vscode
 |---|---|
 | `npx skarp-copilot setup` | Set up skarp for all your projects (`--project` for this project only) |
 | `npx skarp-copilot status` | What's installed, and whether your last task, explanation or brainstorm went through each step. ✓/✗ and field names only, never what you wrote |
-| `npx skarp-copilot@latest setup` | Update |
+| `npx skarp-copilot report` | Write a masked file to share when something goes wrong (`--all`, `--session id`, `--since date`, `--note text`; `--lookup name-1` shows what a placeholder hides, on your machine only) |
+| `npx skarp-copilot log off` | Turn the private diagnostic log off (`log on` to turn it back on) |
+| `npx skarp-copilot@latest setup` | Update (`--telemetry` or `--no-telemetry` answers the telemetry question) |
 | `npx skarp-copilot remove` | Remove the hooks; add `--all` to delete your records too |
 
 ## What skarp does
@@ -58,7 +60,9 @@ Chat is never held. "What does X do?" asks for your guess first, but a quick que
 
 ## Your data
 
-Everything stays on your machine in `~/.skarp`: the ledger, saved reports and explanations, brainstorms, open work and your level. No account, no network, no telemetry.
+Everything stays on your machine in `~/.skarp`: the ledger, saved reports and explanations, brainstorms, open work, your level and a private diagnostic log of how skarp behaved (14 days, never file contents or command output). No account and no network; skarp never sends anything by itself.
+
+Setup also adds a `/flag` prompt file to VS Code. Type `/flag` then a space, with or without what went wrong, and skarp saves it and refreshes a masked report in `~/.skarp/shared/`. Masking can miss things, so read it before you share it. If you say yes during setup, VS Code also writes its own telemetry to a local file, with no prompts or replies, so reports can show which model answered. See [Your data](https://github.com/sureandhar-a/skarp/blob/main/HOW-IT-WORKS.md#your-data).
 
 ## Known gaps
 

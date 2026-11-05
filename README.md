@@ -40,7 +40,7 @@ skarp makes sure the understanding ends up in your head, not only in the code. I
 - [Install and troubleshooting](INSTALL.md)
 - [Contributing](CONTRIBUTING.md)
 
-Everything runs on your machine: no account, no network, no telemetry. Your data lives in `~/.skarp`.
+Everything runs on your machine: no account, no network, and skarp never sends anything by itself. Your data lives in `~/.skarp`. To report a problem, use `/flag` or `npx skarp-copilot report`.
 
 ## Quick start
 

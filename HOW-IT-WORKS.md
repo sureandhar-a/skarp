@@ -74,7 +74,13 @@ Every chat opens and closes with Return: a new chat in the same project starts w
 
 ## Your data
 
-Everything stays on your machine in `~/.skarp`, outside your project, so the AI doesn't read it. This includes a log (the ledger) of every question, answer, skip and grade with its project folder, every report and explanation as a Markdown file in `reports/`, every brainstorm (its conversation, ideas and decision) in `brainstorms/`, and your level. There's no account, no network and no telemetry. To delete everything, remove `~/.skarp`.
+Everything stays on your machine in `~/.skarp`, outside your project, so the AI doesn't read it. This includes a log (the ledger) of every question, answer, skip and grade with its project folder, every report and explanation as a Markdown file in `reports/`, every brainstorm (its conversation, ideas and decision) in `brainstorms/`, and your level. There's no account and no network, and skarp never sends anything by itself. To delete everything, remove `~/.skarp`.
+
+skarp also keeps a private **diagnostic log** of how it behaved, in `~/.skarp/log`: what came in, what skarp decided, what it sent back and how long that took. It includes your messages, the AI's replies and question cards, but never file contents or command output, and anything shaped like a key or token is removed. It's deleted after 14 days (30 if that day has a flag, 50 MB at most). Turn it off with `npx skarp-copilot log off`.
+
+**Reporting a problem:** type `/flag` in chat (on Claude Code, `/skarp:flag` also works), with what went wrong or on its own. Then run `npx skarp-copilot report`, or take the ready file from `~/.skarp/shared/skarp-report.md`. That file is a masked copy: only common English words stay readable, and names, paths and code are replaced. You can add your own names to `~/.skarp/always-mask.txt`, which matters for names that are also ordinary words. Masking can miss things, so read the file before you share it. You send it yourself, and screenshots aren't masked.
+
+On VS Code, setup can also turn on VS Code's own telemetry, written to a local file with no prompts or replies, so a report can show which model answered. It only happens if you say yes, and `npx skarp-copilot remove` undoes it.
 
 ## What's next
 
