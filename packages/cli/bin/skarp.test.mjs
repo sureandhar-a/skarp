@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { hooksFile, nodeOk, paths, remove, setup, status } from "./skarp.mjs";
+import { hooksFile, log, nodeOk, paths, remove, report, setup, status } from "./skarp.mjs";
 
 const dirs = () => ({
   home: mkdtempSync(join(tmpdir(), "skarp-home-")),
@@ -106,4 +106,67 @@ test("Node version check and the hooks file shape", () => {
   assert.equal(nodeOk("24.1.9"), false);
   assert.equal(nodeOk("26.0.0"), true);
   assert.equal(Object.keys(hooksFile("/h.mjs").hooks).length, 6);
+});
+
+test("setup adds /flag, asks before telemetry, and remove undoes both", () => {
+  const d = dirs();
+  const p = paths(d.home, d.cwd);
+  setup({ ...d, ask: () => "n", out: quiet().out });
+  assert.ok(existsSync(p.flagPrompt));
+  assert.ok(!existsSync(p.userSettings), "no answer yes, no settings touched");
+  writeFileSync(p.userSettings, '{"editor.fontSize":14}');
+  setup({ ...d, ask: () => "y", out: quiet().out });
+  const on = JSON.parse(readFileSync(p.userSettings, "utf8"));
+  assert.equal(on["editor.fontSize"], 14);
+  assert.equal(on["github.copilot.chat.otel.exporterType"], "file");
+  assert.equal(on["github.copilot.chat.otel.captureContent"], false);
+  assert.equal(on["github.copilot.chat.otel.outfile"], p.telemetry);
+  assert.ok(existsSync(dirname(p.telemetry)), "VS Code won't create the folder");
+  remove({ ...d, out: quiet().out });
+  assert.deepEqual(JSON.parse(readFileSync(p.userSettings, "utf8")), { "editor.fontSize": 14 });
+  assert.ok(!existsSync(p.flagPrompt));
+});
+
+test("setup won't rewrite a settings file with comments", () => {
+  const d = dirs();
+  const p = paths(d.home, d.cwd);
+  mkdirSync(join(p.userSettings, ".."), { recursive: true });
+  writeFileSync(p.userSettings, "// mine\n{}");
+  const q = quiet();
+  setup({ ...d, telemetry: true, ask: () => "", out: q.out });
+  assert.equal(readFileSync(p.userSettings, "utf8"), "// mine\n{}");
+  assert.ok(q.lines.some((l) => l.includes("has comments")));
+});
+
+test("report asks for names and the problem, writes one masked file, and sends nothing", async () => {
+  const d = dirs();
+  const p = paths(d.home, d.cwd);
+  const answers = ["Northwind, Apple", "the card for Northwind was wrong"];
+  const q = quiet();
+  assert.equal(await report({ ...d, ask: () => answers.shift(), out: q.out }), 0);
+  assert.match(readFileSync(p.alwaysMask, "utf8"), /Northwind\nApple/);
+  const file = join(p.skarp, "shared", "skarp-report.md");
+  const md = readFileSync(file, "utf8");
+  assert.match(md, /card for name-\d+ was wrong/);
+  assert.doesNotMatch(md, /Northwind/);
+  assert.ok(q.lines.some((l) => l.includes(file)));
+  assert.ok(q.lines.some((l) => l.includes("Read the file")));
+  const look = quiet();
+  assert.equal(await report({ ...d, lookup: "name-1", out: look.out }), 0);
+  assert.equal(look.lines[0], "northwind");
+});
+
+test("log off and on are remembered, and status says so", () => {
+  const d = dirs();
+  const p = paths(d.home, d.cwd);
+  assert.equal(log({ ...d, state: "maybe", out: quiet().out }), 1);
+  log({ ...d, state: "off", out: quiet().out });
+  assert.deepEqual(JSON.parse(readFileSync(p.config, "utf8")), { log: false });
+  const q = quiet();
+  status({ ...d, out: q.out });
+  assert.ok(q.lines.includes("- diagnostic log: off"));
+  log({ ...d, state: "on", out: quiet().out });
+  const r = quiet();
+  status({ ...d, out: r.out });
+  assert.ok(r.lines.some((l) => l.startsWith("✓ diagnostic log: on")));
 });

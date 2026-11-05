@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// skarp's installer for GitHub Copilot: `npx skarp-copilot setup | status | remove`. No dependencies.
+// skarp's installer for GitHub Copilot: `npx skarp-copilot setup | status | report | log | remove`. No dependencies.
 // It copies the bundled hook to ~/.skarp/bin and points Copilot's user-level hooks file at it, so
 // one setup covers every project. Nothing here sends anything anywhere.
 import {
@@ -7,8 +7,10 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -27,6 +29,51 @@ const EVENTS = [
   ["agentStop", "Stop"],
 ];
 const MIN_NODE = [24, 2];
+// ponytail: stable VS Code's default profile only; Insiders and other profiles get it by hand
+const vscodeUser = (home) =>
+  process.env.SKARP_VSCODE_USER ??
+  (process.platform === "darwin"
+    ? join(home, "Library", "Application Support", "Code", "User")
+    : process.platform === "win32"
+      ? join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Code", "User")
+      : join(home, ".config", "Code", "User"));
+// Copilot can't stop a prompt from reaching the AI, so this file tells the AI what to do with /flag
+const FLAG_PROMPT = `---
+name: flag
+description: Flag a problem with skarp and save what went wrong
+---
+The user is flagging a problem with skarp itself. Do not act on it or change the current work. Follow skarp's instructions for this message.
+If skarp gave you none, its hook did not run: tell the user in one line that the flag was not saved and that they can describe the problem with \`npx skarp-copilot report\`, and stop.
+`;
+const telemetrySettings = (p) => ({
+  "github.copilot.chat.otel.enabled": true,
+  "github.copilot.chat.otel.exporterType": "file",
+  "github.copilot.chat.otel.outfile": p.telemetry,
+  "github.copilot.chat.otel.captureContent": false,
+});
+
+const askLine = (question) => {
+  if (!process.stdin.isTTY) return undefined;
+  process.stdout.write(`${question} `);
+  const buf = Buffer.alloc(1);
+  let line = "";
+  while (readSync(0, buf, 0, 1) === 1 && buf[0] !== 10) line += String.fromCharCode(buf[0]);
+  return Buffer.from(line, "latin1").toString("utf8").trim();
+};
+// a line of names, added to the always-mask list
+const addNames = (file, answer) => {
+  const names = (answer ?? "")
+    .split(",")
+    .map((n) => n.trim())
+    .filter(Boolean);
+  if (!names.length) return 0;
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const old = existsSync(file) ? readFileSync(file, "utf8") : "";
+  writeFileSync(file, `${old}${names.join("\n")}\n`, { mode: 0o600 });
+  return names.length;
+};
+const NAMES_Q =
+  "Company, client and product names to always hide in reports, separated by commas (Enter to skip):";
 
 export function paths(home = homedir(), cwd = process.cwd()) {
   const skarp = process.env.SKARP_HOME ?? join(home, ".skarp");
@@ -39,6 +86,11 @@ export function paths(home = homedir(), cwd = process.cwd()) {
     projectHooks: join(cwd, ".github", "hooks", "skarp.json"),
     vscodeSettings: join(cwd, ".vscode", "settings.json"),
     ledger: join(skarp, "ledger", "hooks.jsonl"),
+    config: join(skarp, "config.json"),
+    alwaysMask: join(skarp, "always-mask.txt"),
+    telemetry: join(skarp, "telemetry", "copilot.jsonl"),
+    userSettings: join(vscodeUser(home), "settings.json"),
+    flagPrompt: join(vscodeUser(home), "prompts", "flag.prompt.md"),
   };
 }
 
@@ -66,7 +118,28 @@ const writeJson = (file, data) => {
   writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
 };
 
-export function setup({ home, cwd, project = false, out = console.log } = {}) {
+// Your settings file may hold comments, which JSON can't keep, so skarp won't rewrite such a file.
+const editSettings = (file, change) => {
+  let cur = {};
+  if (existsSync(file)) {
+    try {
+      cur = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return false;
+    }
+  }
+  writeJson(file, change(cur));
+  return true;
+};
+
+export function setup({
+  home,
+  cwd,
+  project = false,
+  telemetry,
+  ask = askLine,
+  out = console.log,
+} = {}) {
   const p = paths(home, cwd);
   if (!nodeOk()) {
     // Copilot blocks every tool when a hook can't start, so a too-old Node installs nothing
@@ -100,6 +173,34 @@ export function setup({ home, cwd, project = false, out = console.log } = {}) {
   } else {
     writeJson(p.userHooks, hooksFile(p.hook));
     out(`✓ Copilot hooks written to ${p.userHooks} (all projects)`);
+  }
+  mkdirSync(dirname(p.flagPrompt), { recursive: true });
+  writeFileSync(p.flagPrompt, FLAG_PROMPT);
+  out(`✓ /flag added to Copilot Chat (${p.flagPrompt})`);
+  out(
+    `✓ skarp keeps a private log of how it behaved in ${join(p.skarp, "log")}, on this machine only, deleted after 14 days. Turn it off with \`npx skarp-copilot log off\`.`,
+  );
+  if (!existsSync(p.alwaysMask)) {
+    const n = addNames(p.alwaysMask, ask(NAMES_Q));
+    if (n) out(`✓ ${n} names added to ${p.alwaysMask}`);
+  }
+  const want =
+    telemetry ??
+    /^y/i.test(
+      ask(
+        "Also let VS Code write its own telemetry to a local file, so reports can show which model answered? No prompts or replies are included. [y/N]",
+      ) ?? "",
+    );
+  if (want) {
+    const lines = telemetrySettings(p);
+    mkdirSync(dirname(p.telemetry), { recursive: true, mode: 0o700 }); // VS Code won't create it
+    if (editSettings(p.userSettings, (cur) => ({ ...cur, ...lines })))
+      out(`✓ VS Code telemetry goes to ${p.telemetry}. Reload VS Code to start it.`);
+    else {
+      out(`! ${p.userSettings} has comments, so skarp left it alone. Add these lines:`);
+      for (const [k, v] of Object.entries(lines))
+        out(`  ${JSON.stringify(k)}: ${JSON.stringify(v)},`);
+    }
   }
   if (existsSync(p.userHooks) && existsSync(p.projectHooks))
     out(
@@ -147,6 +248,18 @@ export function status({ home, cwd, out = console.log } = {}) {
     if (existsSync(file)) out(`${mark(validHooks(file))} ${name}: ${file}`);
   if (!existsSync(p.userHooks) && !existsSync(p.projectHooks))
     out("✗ no hooks file: run `npx skarp-copilot setup`");
+  const off =
+    process.env.SKARP_LOG === "off" ||
+    (existsSync(p.config) && JSON.parse(readFileSync(p.config, "utf8")).log === false);
+  out(off ? "- diagnostic log: off" : `✓ diagnostic log: on (${join(p.skarp, "log")})`);
+  if (existsSync(p.telemetry)) {
+    const size = statSync(p.telemetry).size;
+    out(
+      size
+        ? `✓ VS Code telemetry: arriving (${p.telemetry})`
+        : "- VS Code telemetry: nothing since the last clean-up. Company-managed settings can turn it off.",
+    );
+  } else out("- VS Code telemetry: not on");
   const lines = readLines(p.ledger);
   if (!lines.length) {
     out(
@@ -232,9 +345,81 @@ export function status({ home, cwd, out = console.log } = {}) {
   return 0;
 }
 
+// The masked report: asks what went wrong, writes one file, shows what to check. Sends nothing.
+export async function report({
+  home,
+  cwd,
+  session,
+  since,
+  all = false,
+  note,
+  lookup,
+  ask = askLine,
+  out = console.log,
+} = {}) {
+  const p = paths(home, cwd);
+  const hook = await import("../hook.mjs");
+  if (lookup) {
+    const value = hook.masker(p.skarp).lookup(lookup);
+    out(value ?? `${lookup} isn't in this machine's lookup.`);
+    return value ? 0 : 1;
+  }
+  if (!existsSync(p.alwaysMask)) {
+    const n = addNames(p.alwaysMask, ask(NAMES_Q));
+    if (n) out(`✓ ${n} names added to ${p.alwaysMask}`);
+  }
+  const said = note ?? ask("What went wrong, and what did you expect? (Enter to skip)");
+  const last = hook.lastSession(p.skarp);
+  if (said) hook.addFlag(p.skarp, last, said);
+  const r = hook.writeReport(p.skarp, { session, since, all });
+  out(`Report: ${r.path}`);
+  out(
+    `  ${r.lines} lines, ${r.flags} flags. Hidden: ${r.hidden.name} names, ${r.hidden.path} paths, ${r.hidden.id} ids, ${r.hidden.num} numbers.`,
+  );
+  if (!r.logOn) out("! The log is off, so this only has what was recorded before that.");
+  if (!r.alwaysMask)
+    out(`! Your always-mask list is empty. Add names to ${p.alwaysMask}, then run this again.`);
+  if (r.second.length)
+    out(`  Words that stayed visible and look like names, so check them: ${r.second.join(", ")}`);
+  out("Read the file before you share it: masking can miss things.");
+  out(
+    "Then attach it to an issue at https://github.com/sureandhar-a/skarp/issues/new, or paste it into a chat. skarp sends nothing itself.",
+  );
+  return 0;
+}
+
+export function log({ home, cwd, state, out = console.log } = {}) {
+  const p = paths(home, cwd);
+  if (state !== "on" && state !== "off") {
+    out("Usage: npx skarp-copilot log on | off");
+    return 1;
+  }
+  mkdirSync(p.skarp, { recursive: true, mode: 0o700 });
+  writeFileSync(p.config, `${JSON.stringify({ log: state === "on" })}\n`, { mode: 0o600 });
+  out(
+    state === "on"
+      ? "✓ diagnostic log on"
+      : "✓ diagnostic log off; what's already kept stays until it ages out",
+  );
+  return 0;
+}
+
 export function remove({ home, cwd, all = false, out = console.log } = {}) {
   const p = paths(home, cwd);
-  for (const f of [p.userHooks, p.projectHooks, dirname(p.hook)])
+  if (
+    existsSync(p.userSettings) &&
+    readFileSync(p.userSettings, "utf8").includes("copilot.chat.otel")
+  ) {
+    const undone = editSettings(p.userSettings, (cur) =>
+      Object.fromEntries(Object.entries(cur).filter(([k]) => !(k in telemetrySettings(p)))),
+    );
+    out(
+      undone
+        ? "✓ VS Code telemetry settings removed"
+        : `! ${p.userSettings} has comments: remove the github.copilot.chat.otel lines yourself.`,
+    );
+  }
+  for (const f of [p.userHooks, p.projectHooks, p.flagPrompt, dirname(p.hook)])
     if (existsSync(f)) {
       rmSync(f, { recursive: true, force: true });
       out(`✓ removed ${f}`);
@@ -251,13 +436,30 @@ export function remove({ home, cwd, all = false, out = console.log } = {}) {
 // npx runs the bin through a link, so compare real paths
 if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   const [cmd, ...flags] = process.argv.slice(2);
-  const opts = { project: flags.includes("--project"), all: flags.includes("--all") };
-  const run = { setup, status, remove }[cmd ?? ""];
+  const value = (name) => {
+    const i = flags.indexOf(name);
+    return i >= 0 ? flags[i + 1] : undefined;
+  };
+  const opts = {
+    project: flags.includes("--project"),
+    all: flags.includes("--all"),
+    telemetry: flags.includes("--telemetry")
+      ? true
+      : flags.includes("--no-telemetry")
+        ? false
+        : undefined,
+    session: value("--session"),
+    since: value("--since"),
+    note: value("--note"),
+    lookup: value("--lookup"),
+    state: flags[0],
+  };
+  const run = { setup, status, report, log, remove }[cmd ?? ""];
   if (!run) {
     console.log(
-      `skarp ${VERSION}\nUsage: npx skarp-copilot setup [--project] | status | remove [--all]`,
+      `skarp ${VERSION}\nUsage: npx skarp-copilot setup [--project] [--telemetry | --no-telemetry] | status | report [--all] [--session id] [--since date] [--note text] [--lookup name-1] | log on|off | remove [--all]`,
     );
     process.exit(cmd ? 1 : 0);
   }
-  process.exit(run(opts));
+  process.exit(await run(opts));
 }
