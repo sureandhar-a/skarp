@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { toLedgerLine } from "@skarp/core";
 import {
   ALIGNED,
@@ -33,6 +33,8 @@ import {
   wantsBrainstorm,
   wantsExplain,
 } from "@skarp/kernel";
+import { diag } from "./diag.ts";
+import { writeReport } from "./mask.ts";
 import {
   BIG_PICTURE_HINTS,
   BS_DECIDE,
@@ -70,6 +72,20 @@ import {
   understoodQuestion,
   understoodRules,
 } from "./modes.ts";
+
+export { logOn, scrub } from "./diag.ts";
+
+// a note from the report command: the same kind of flag as /flag
+export const addFlag = (home: string, session: string | undefined, text: string) =>
+  diag(home, "flag", { session, text, via: "report" });
+export {
+  alwaysMaskFile,
+  lastSession,
+  masker,
+  readAlwaysMask,
+  reportFile,
+  writeReport,
+} from "./mask.ts";
 
 export type Level = "beginner" | "intermediate" | "advanced";
 
@@ -115,6 +131,8 @@ interface Session {
   fact?: string; // the file:line the blank cites: the ledger fact the fill is checked against
   returned?: boolean; // this chat's opening Return ran (framework rule 3)
   next?: Ask; // the Commit question that follows the opening Return
+  flagWaiting?: boolean; // /flag came with no text: the next thing the user says is the note
+  flagTurn?: boolean; // this turn is about a flag: the AI touches nothing and owes nothing
 }
 
 // Understanding a target (framework §18, D179-D185): the big picture, then one part at a time
@@ -161,6 +179,7 @@ export const SECTIONS = TASK_REPORT.sections;
 // Claude Code's AskUserQuestion, VS Code's askQuestions (vscode/askQuestions, ask_questions),
 // Copilot agent's ask_user (seen 26 Oct, VS Code 1.143)
 const ASK_TOOL = /^AskUserQuestion$|ask_?questions|^ask_?user$/i;
+const FLAG = /^\/(?:skarp:)?flag\b[ \t]*([\s\S]*)$/i;
 const ASK_NAMES = "AskUserQuestion in Claude Code, ask_user or askQuestions in VS Code";
 const ASKING_TOOLS = (tool: string) => ASK_TOOL.test(tool) || tool === "ToolSearch";
 const RUNS = /^(Bash|run_in_terminal|runInTerminal)$|terminal/i; // shell tools, Claude and VS Code
@@ -310,6 +329,7 @@ export function handle(input: HookInput, home: string): object | undefined {
     if (type) writeLine(type, payload);
   };
   const writeLine = (type: string, payload: object) => {
+    diag(home, type, { session: sid, task: s.id, ...payload });
     // sync, so lines land in order; best effort, a failed write never stops the agent
     try {
       mkdirSync(join(home, "ledger"), { recursive: true, mode: 0o700 });
@@ -530,7 +550,40 @@ export function handle(input: HookInput, home: string): object | undefined {
       : `The user's one line: "${said}". In one or two lines, say what in it matches what was covered and what is missing, citing a file. Never say 'correct'; no praise.`;
   };
 
+  // /flag (framework §11): marks the moment, keeps the note; never a task, an answer or a skip.
+  // Claude Code honors the block, so its AI never sees it. Copilot ignores this hook's output, so
+  // its /flag prompt file tells the AI what to do and the turn's other hooks keep it harmless.
+  const onFlag = (note: string, via: string) => {
+    const waiting = s.asking ? ` skarp's question is still waiting: "${s.asking.question}"` : "";
+    s.flagTurn = true;
+    s.flagWaiting = !note;
+    save();
+    if (!note) return `What went wrong? Type it as your next message and skarp saves it.${waiting}`;
+    diag(home, "flag", {
+      session: sid,
+      task: s.id,
+      surface: surfaceOf(input.raw),
+      text: note,
+      via,
+      asking: s.asking?.block,
+    });
+    let where = "";
+    try {
+      where = ` A masked report is ready at ${writeReport(home).path}: read it before sharing.`;
+    } catch {}
+    return `skarp saved your flag.${where}${waiting}`;
+  };
   if (event === "UserPromptSubmit") {
+    const flag = FLAG.exec((input.prompt ?? "").trim());
+    if (flag || s.flagWaiting)
+      return {
+        decision: "block",
+        reason: onFlag((flag?.[1] ?? input.prompt ?? "").trim(), "typed"),
+      };
+    if (s.flagTurn) {
+      s.flagTurn = false;
+      save();
+    }
     try {
       return onPrompt();
     } finally {
@@ -889,6 +942,34 @@ export function handle(input: HookInput, home: string): object | undefined {
   }
 
   // understand's cards: O0 and K8 come at the end of a step the AI writes; O1, O2 and A10 are due
+  // the AI may ask "what went wrong?" on a card; nothing else happens in a flag's turn
+  if (
+    event === "PreToolUse" &&
+    s.flagTurn &&
+    !(s.flagWaiting && ASK_TOOL.test(input.tool_name ?? ""))
+  )
+    return deny(
+      "skarp: the user is flagging a problem with skarp, so use no tools this turn. Reply in one short line and stop.",
+    );
+  if (event === "Stop" && s.flagTurn) {
+    s.flagTurn = false;
+    save();
+    return undefined;
+  }
+  if (event === "PostToolUse" && ASK_TOOL.test(input.tool_name ?? "")) {
+    const said = readAnswers(input.tool_response)[0]?.trim() ?? "";
+    const flag = FLAG.exec(said);
+    if (flag || s.flagWaiting) {
+      const note = onFlag((flag?.[1] ?? said).trim(), "card");
+      const again = s.asking ? ` Then ask the question again: "${s.asking.question}"` : "";
+      const text = `${note} Tell the user in one line.${again}`;
+      return {
+        additionalContext: text,
+        hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: text },
+      };
+    }
+  }
+
   if (event === "PreToolUse" && s.und && ASK_TOOL.test(input.tool_name ?? "")) {
     const u = s.und;
     let card: { block: string; question: string } | undefined = s.asking;
@@ -2059,9 +2140,178 @@ function readOutcomes(home: string): Outcome[] {
   }
 }
 
+// Which agent sent this, from the shape of its input: the desktop and CLI agents differ here.
+export function surfaceOf(raw: Record<string, unknown> = {}): string {
+  if ("permission_mode" in raw || "prompt_id" in raw || "scratchpad_dir" in raw)
+    return "claude-code";
+  if ("toolName" in raw || "toolArgs" in raw || "sessionId" in raw) return "copilot-cli";
+  if ("timestamp" in raw) return "vscode-copilot";
+  return "unknown";
+}
+
+// What skarp was in the middle of, by name only: enough to see how a message moved it.
+const stateOf = (s?: Session) =>
+  s && {
+    mode: s.mode,
+    hear: s.hear,
+    block: s.block,
+    asking: s.asking?.block,
+    und_step: s.und?.step,
+    bs_phase: s.bs?.phase,
+    rounds: s.rounds,
+    rung: s.rung,
+    report_due: s.reportDue,
+    sent_back: s.sentBack,
+    closing: s.closing,
+    flag_waiting: s.flagWaiting,
+  };
+
+// A tool's input without its contents: field names and sizes, plus the path or command it names.
+const NAMED = new Set(["file_path", "filePath", "path", "notebook_path", "command"]);
+function shape(v: unknown, depth = 0): unknown {
+  if (typeof v === "string") return `string(${v.length})`;
+  if (Array.isArray(v)) return `array(${v.length})`;
+  if (!v || typeof v !== "object") return typeof v;
+  if (depth >= 2) return "object";
+  return Object.fromEntries(
+    Object.entries(v).map(([k, x]) => [
+      k,
+      NAMED.has(k) && typeof x === "string" ? x.slice(0, 2000) : shape(x, depth + 1),
+    ]),
+  );
+}
+
+// Where the AI's reply came from at Stop, or why there was none.
+function replyOf(input: HookInput) {
+  const path = input.transcript_path;
+  let transcript = "not given";
+  let model: unknown;
+  let fromFile: string | undefined;
+  if (path) {
+    try {
+      const lines = readFileSync(path, "utf8").trim().split("\n");
+      transcript = "no assistant text";
+      fromFile = lastAssistantText(path);
+      if (fromFile) transcript = "read";
+      for (const l of lines.reverse()) {
+        model = JSON.parse(l).message?.model;
+        if (model) break;
+      }
+    } catch {
+      transcript = "unreadable";
+    }
+  }
+  const text = input.last_assistant_message ?? fromFile;
+  return {
+    source: input.last_assistant_message ? "hook field" : fromFile ? "transcript" : "none",
+    transcript,
+    model,
+    chars: text?.length ?? 0,
+    headings: text?.match(/^#{2,3} .*/gm)?.slice(0, 20),
+    text,
+  };
+}
+
+function skarpVersion(): string {
+  const dir = dirname(process.argv[1] ?? ".");
+  try {
+    return readFileSync(join(dir, "version"), "utf8").trim(); // the npm setup
+  } catch {}
+  try {
+    return JSON.parse(readFileSync(join(dir, "..", ".claude-plugin", "plugin.json"), "utf8"))
+      .version;
+  } catch {}
+  return "unknown";
+}
+
+// One hook call with its log line around it. The log never changes what skarp answers, and a
+// crash is recorded and swallowed: the agent carries on without skarp.
+export function run(input: HookInput, home: string): object | undefined {
+  const sid = input.session_id ?? "unknown";
+  const file = join(home, "sessions", `${sid.replace(/[^\w-]/g, "")}.json`);
+  const before = read<Session>(file);
+  const started = performance.now();
+  const raw = input.raw ?? {};
+  const surface = surfaceOf(raw);
+  const event = input.hook_event_name ?? "";
+  const card = ASK_TOOL.test(input.tool_name ?? "");
+  const line = () => {
+    const prompt = event === "UserPromptSubmit" ? (input.prompt ?? "") : undefined;
+    return {
+      session: sid,
+      surface,
+      task: before?.id,
+      hook: event,
+      cwd: input.cwd,
+      fields: Object.keys(raw).sort(),
+      prompt,
+      tool: input.tool_name,
+      // a question card in full; any other tool's contents stay out of the log
+      input: input.tool_input && (card ? input.tool_input : shape(input.tool_input)),
+      response: input.tool_response && (card ? input.tool_response : shape(input.tool_response)),
+      rules: prompt === undefined ? undefined : rulesFired(prompt, before),
+      reply: event === "Stop" ? replyOf(input) : undefined,
+      before: stateOf(before),
+    };
+  };
+  try {
+    if (!before)
+      diag(home, "session", {
+        session: sid,
+        surface,
+        skarp: skarpVersion(),
+        os: process.platform,
+        node: process.versions.node,
+        model: raw.model,
+        source: raw.source,
+        transcript_path: input.transcript_path,
+      });
+  } catch {}
+  let output: object | undefined;
+  let crash: Error | undefined;
+  try {
+    output = handle(input, home);
+  } catch (e) {
+    crash = e as Error;
+  }
+  try {
+    if (crash)
+      diag(home, "hook_crash", { session: sid, hook: event, error: crash.stack ?? String(crash) });
+    const after = read<Session>(file);
+    diag(home, "hook", {
+      ...line(),
+      after: stateOf(after),
+      output,
+      ms: Math.round(performance.now() - started),
+    });
+  } catch {}
+  return output;
+}
+
+// Which of skarp's message rules this message fired, before any of them decided anything.
+function rulesFired(prompt: string, s?: Session) {
+  const said = prompt.trim();
+  try {
+    return {
+      classify: classifyMessage(prompt),
+      explain: wantsExplain(prompt),
+      brainstorm: wantsBrainstorm(prompt),
+      done: isDone(said),
+      still: STILL.test(said),
+      replaces: REPLACES.test(said),
+      build_it: BUILD_IT.test(said),
+      aside: SMALL_TALK.test(said) && said.split(/\s+/).length <= 3,
+      question: said.endsWith("?"),
+      new_task: s?.task === undefined ? undefined : newTask(s, prompt),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 if (import.meta.main) {
   try {
-    const out = handle(
+    const out = run(
       normalize(JSON.parse(readFileSync(0, "utf8")), process.argv[2]),
       process.env.SKARP_HOME ?? join(homedir(), ".skarp"),
     );
