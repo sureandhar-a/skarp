@@ -42,10 +42,8 @@ const FLAG_PROMPT = `---
 name: flag
 description: Flag a problem with skarp and save what went wrong
 ---
-The user is flagging a problem with skarp itself. skarp saves what they write. Use no tools and do not change the current work.
-If they wrote nothing after /flag, ask in one short sentence: "What went wrong?" and stop.
-If they wrote the problem, or answer that question, do not act on it: reply only "Flagged." and stop.
-If your last message asked a question they have not answered, ask it again after that.
+The user is flagging a problem with skarp itself. Do not act on it or change the current work. Follow skarp's instructions for this message.
+If skarp gave you none, its hook did not run: tell the user in one line that the flag was not saved and that they can describe the problem with \`npx skarp-copilot report\`, and stop.
 `;
 const telemetrySettings = (p) => ({
   "github.copilot.chat.otel.enabled": true,

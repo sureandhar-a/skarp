@@ -1631,12 +1631,22 @@ ${rulesFor(s, levelNow())}`}`;
   };
   if (event === "UserPromptSubmit") {
     const flag = FLAG.exec((input.prompt ?? "").trim());
-    if (flag || s.flagWaiting)
+    const replay = s.blockReason && (input.prompt ?? "").trim().startsWith(s.blockReason.trim().slice(0, 60));
+    if (!replay && (flag || s.flagWaiting)) {
+      const said = onFlag((flag?.[1] ?? input.prompt ?? "").trim(), "typed");
+      if (surfaceOf(input.raw) === "claude-code") return { decision: "block", reason: said };
+      const then = s.asking && !s.flagWaiting ? `Then ask the question again on a card: "${s.asking.question}"` : "Then stop.";
+      const text = `The user flagged a problem with skarp. It is not a task: don't act on it or change the current work. Show the user exactly this and add nothing: "${said}" ${then}`;
+      if (surfaceOf(input.raw) === "copilot-cli") {
+        s.flagSay = text;
+        save();
+      }
       return {
-        decision: "block",
-        reason: onFlag((flag?.[1] ?? input.prompt ?? "").trim(), "typed")
+        additionalContext: text,
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text }
       };
-    if (s.flagTurn) {
+    }
+    if (s.flagTurn && !replay) {
       s.flagTurn = false;
       save();
     }
@@ -1971,14 +1981,23 @@ ${brainstormRules("stress", bs.stakes)}` : note}`
     save();
     return context(`${owed}${from}${ask2}${rulesFor(s, level ?? profile.level ?? "intermediate")}`);
   }
-  if (event === "PreToolUse" && s.flagTurn && !(s.flagWaiting && ASK_TOOL.test(input.tool_name ?? "")))
-    return deny(
-      "skarp: the user is flagging a problem with skarp, so use no tools this turn. Reply in one short line and stop."
-    );
+  if (event === "PreToolUse" && s.flagTurn) {
+    if (!ASK_TOOL.test(input.tool_name ?? "") || !(s.flagWaiting || s.asking))
+      return deny(
+        "skarp: the user is flagging a problem with skarp, so use no tools this turn. Reply in one short line and stop."
+      );
+    if (!s.flagWaiting) {
+      s.flagTurn = false;
+      save();
+    }
+  }
   if (event === "Stop" && s.flagTurn) {
-    s.flagTurn = false;
+    const say = s.flagSay;
+    s.flagSay = void 0;
+    if (say) s.blockReason = say;
+    else s.flagTurn = false;
     save();
-    return void 0;
+    return say ? { decision: "block", reason: say } : void 0;
   }
   if (event === "PostToolUse" && ASK_TOOL.test(input.tool_name ?? "")) {
     const said = readAnswers(input.tool_response)[0]?.trim() ?? "";

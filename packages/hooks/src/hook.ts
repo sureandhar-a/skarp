@@ -133,6 +133,7 @@ interface Session {
   next?: Ask; // the Commit question that follows the opening Return
   flagWaiting?: boolean; // /flag came with no text: the next thing the user says is the note
   flagTurn?: boolean; // this turn is about a flag: the AI touches nothing and owes nothing
+  flagSay?: string; // what Stop still has to tell the AI about the flag
 }
 
 // Understanding a target (framework §18, D179-D185): the big picture, then one part at a time
@@ -551,8 +552,8 @@ export function handle(input: HookInput, home: string): object | undefined {
   };
 
   // /flag (framework §11): marks the moment, keeps the note; never a task, an answer or a skip.
-  // Claude Code honors the block, so its AI never sees it. Copilot ignores this hook's output, so
-  // its /flag prompt file tells the AI what to do and the turn's other hooks keep it harmless.
+  // Claude Code blocks it, so its AI never sees it and the user reads the reason. VS Code hides a
+  // block's reason and its Copilot sessions hang on one with a card open, so there the AI shows it.
   const onFlag = (note: string, via: string) => {
     const waiting = s.asking ? ` skarp's question is still waiting: "${s.asking.question}"` : "";
     s.flagTurn = true;
@@ -575,12 +576,28 @@ export function handle(input: HookInput, home: string): object | undefined {
   };
   if (event === "UserPromptSubmit") {
     const flag = FLAG.exec((input.prompt ?? "").trim());
-    if (flag || s.flagWaiting)
+    // skarp's own Stop message, replayed as a user message: not the user's note
+    const replay =
+      s.blockReason && (input.prompt ?? "").trim().startsWith(s.blockReason.trim().slice(0, 60));
+    if (!replay && (flag || s.flagWaiting)) {
+      const said = onFlag((flag?.[1] ?? input.prompt ?? "").trim(), "typed");
+      if (surfaceOf(input.raw) === "claude-code") return { decision: "block", reason: said };
+      const then =
+        s.asking && !s.flagWaiting
+          ? `Then ask the question again on a card: "${s.asking.question}"`
+          : "Then stop.";
+      const text = `The user flagged a problem with skarp. It is not a task: don't act on it or change the current work. Show the user exactly this and add nothing: "${said}" ${then}`;
+      // Copilot sessions drop a prompt hook's context, so Stop delivers it
+      if (surfaceOf(input.raw) === "copilot-cli") {
+        s.flagSay = text;
+        save();
+      }
       return {
-        decision: "block",
-        reason: onFlag((flag?.[1] ?? input.prompt ?? "").trim(), "typed"),
+        additionalContext: text,
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text },
       };
-    if (s.flagTurn) {
+    }
+    if (s.flagTurn && !replay) {
       s.flagTurn = false;
       save();
     }
@@ -942,19 +959,25 @@ export function handle(input: HookInput, home: string): object | undefined {
   }
 
   // understand's cards: O0 and K8 come at the end of a step the AI writes; O1, O2 and A10 are due
-  // the AI may ask "what went wrong?" on a card; nothing else happens in a flag's turn
-  if (
-    event === "PreToolUse" &&
-    s.flagTurn &&
-    !(s.flagWaiting && ASK_TOOL.test(input.tool_name ?? ""))
-  )
-    return deny(
-      "skarp: the user is flagging a problem with skarp, so use no tools this turn. Reply in one short line and stop.",
-    );
+  // the AI may ask "what went wrong?" or the waiting question on a card; nothing else happens in a
+  // flag's turn, and asking the waiting question ends it
+  if (event === "PreToolUse" && s.flagTurn) {
+    if (!ASK_TOOL.test(input.tool_name ?? "") || !(s.flagWaiting || s.asking))
+      return deny(
+        "skarp: the user is flagging a problem with skarp, so use no tools this turn. Reply in one short line and stop.",
+      );
+    if (!s.flagWaiting) {
+      s.flagTurn = false;
+      save();
+    }
+  }
   if (event === "Stop" && s.flagTurn) {
-    s.flagTurn = false;
+    const say = s.flagSay;
+    s.flagSay = undefined;
+    if (say) s.blockReason = say;
+    else s.flagTurn = false;
     save();
-    return undefined;
+    return say ? { decision: "block", reason: say } : undefined;
   }
   if (event === "PostToolUse" && ASK_TOOL.test(input.tool_name ?? "")) {
     const said = readAnswers(input.tool_response)[0]?.trim() ?? "";

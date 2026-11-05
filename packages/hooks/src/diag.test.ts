@@ -291,6 +291,74 @@ test("in a flag's turn (Copilot) the AI gets no tools and Stop owes nothing", ()
   assert.equal(next?.decision, "block", "the normal rules are back");
 });
 
+const vscode = (home: string, event: string, extra: object = {}) =>
+  run(
+    normalize({
+      session_id: "v1",
+      timestamp: "2026-11-05T12:00:00Z",
+      cwd: "/work/acme-shop",
+      hook_event_name: event,
+      ...extra,
+    }),
+    home,
+  ) as Record<string, unknown> | undefined;
+
+test("on VS Code the AI shows the flag's message, and asks an open card again", () => {
+  const home = dir();
+  vscode(home, "UserPromptSubmit", { prompt: "add the tax value" });
+  const out = vscode(home, "UserPromptSubmit", { prompt: "/flag the card is faint" });
+  assert.equal(out?.decision, undefined, "no block: VS Code would hide the message");
+  assert.match(String(out?.additionalContext), /saved your flag/);
+  assert.match(String(out?.additionalContext), /ask the question again/);
+  assert.equal(lines(home).find((l) => l.event === "flag").text, "the card is faint");
+  assert.ok(!lines(home).some((l) => l.event === "answer"));
+
+  const tool = { tool_name: "Read", tool_input: { file_path: "a" } };
+  const flagging = /flagging a problem/;
+  assert.match(String(vscode(home, "PreToolUse", tool)?.permissionDecisionReason), flagging);
+  const card = { tool_name: "ask_user", tool_input: { message: "What is your plan?" } };
+  const asked = vscode(home, "PreToolUse", card);
+  assert.doesNotMatch(String(asked?.permissionDecisionReason), flagging);
+  const later = vscode(home, "PreToolUse", tool);
+  assert.doesNotMatch(String(later?.permissionDecisionReason), flagging, "the card ended it");
+});
+
+test("on VS Code /flag alone shows the question, and the next message is the note", () => {
+  const home = dir();
+  const out = vscode(home, "UserPromptSubmit", { prompt: "/flag " });
+  assert.match(String(out?.additionalContext), /What went wrong/);
+  assert.match(String(out?.additionalContext), /Then stop/);
+  assert.equal(vscode(home, "Stop", { last_assistant_message: "What went wrong?" }), undefined);
+  const next = vscode(home, "UserPromptSubmit", { prompt: "it restarted Hear" });
+  assert.match(String(next?.additionalContext), /saved your flag/);
+  assert.equal(lines(home).find((l) => l.event === "flag").text, "it restarted Hear");
+  assert.equal(vscode(home, "Stop", { last_assistant_message: "Saved." }), undefined);
+  const after = vscode(home, "UserPromptSubmit", { prompt: "add the tax value" });
+  assert.doesNotMatch(String(after?.additionalContext), /flagged/);
+});
+
+test("in a Copilot session Stop delivers the flag's message, once", () => {
+  const home = dir();
+  const cli = (event: string, extra: object = {}) =>
+    run(
+      normalize({ sessionId: "c1", cwd: "/work/acme-shop", hook_event_name: event, ...extra }),
+      home,
+    ) as Record<string, unknown> | undefined;
+  cli("UserPromptSubmit", { prompt: "/flag " });
+  const first = cli("Stop", { last_assistant_message: "Thanks for flagging." });
+  assert.equal(first?.decision, "block");
+  assert.match(String(first?.reason), /What went wrong/);
+  cli("UserPromptSubmit", { prompt: String(first?.reason) }); // Copilot replays it as a user message
+  assert.equal(
+    lines(home).filter((l) => l.event === "flag").length,
+    0,
+    "the replay isn't the note",
+  );
+  assert.equal(cli("Stop", { last_assistant_message: "What went wrong?" }), undefined);
+  cli("UserPromptSubmit", { prompt: "it restarted Hear" });
+  assert.equal(lines(home).find((l) => l.event === "flag").text, "it restarted Hear");
+});
+
 // the report
 const planted = [
   "We need to fix the invoice export for Apple before Friday.",
