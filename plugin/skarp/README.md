@@ -83,7 +83,7 @@ Everything stays on your machine in `~/.skarp`, outside your project, so the AI 
 - `sessions/`: the open work per session
 - `profile.json`: your level
 
-There's no account, no network and no telemetry. To delete everything, remove `~/.skarp` (or run `npx skarp-copilot remove --all`).
+There's no account and no network, and skarp never sends anything by itself. To report a problem, use `/skarp:flag` or `npx skarp-copilot report`; see [Your data](../../HOW-IT-WORKS.md#your-data). To delete everything, remove `~/.skarp` (or run `npx skarp-copilot remove --all`).
 
 ## Known gaps in this preview
 
