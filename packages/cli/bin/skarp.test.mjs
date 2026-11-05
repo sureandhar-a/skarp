@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { hooksFile, log, nodeOk, paths, remove, report, setup, status } from "./skarp.mjs";
 
@@ -121,6 +121,7 @@ test("setup adds /flag, asks before telemetry, and remove undoes both", () => {
   assert.equal(on["github.copilot.chat.otel.exporterType"], "file");
   assert.equal(on["github.copilot.chat.otel.captureContent"], false);
   assert.equal(on["github.copilot.chat.otel.outfile"], p.telemetry);
+  assert.ok(existsSync(dirname(p.telemetry)), "VS Code won't create the folder");
   remove({ ...d, out: quiet().out });
   assert.deepEqual(JSON.parse(readFileSync(p.userSettings, "utf8")), { "editor.fontSize": 14 });
   assert.ok(!existsSync(p.flagPrompt));

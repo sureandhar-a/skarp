@@ -195,6 +195,7 @@ export function setup({
     );
   if (want) {
     const lines = telemetrySettings(p);
+    mkdirSync(dirname(p.telemetry), { recursive: true, mode: 0o700 }); // VS Code won't create it
     if (editSettings(p.userSettings, (cur) => ({ ...cur, ...lines })))
       out(`✓ VS Code telemetry goes to ${p.telemetry}. Reload VS Code to start it.`);
     else {
